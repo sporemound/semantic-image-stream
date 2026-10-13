@@ -22,7 +22,7 @@ from .configuration import Settings
 from .models import ImageCandidate
 
 log = logging.getLogger(__name__)
-USER_AGENT = "SemanticImageStream/0.1.0 (https://github.com/sporemound/semantic-image-stream; https://github.com/sporemound)"
+USER_AGENT = "SemanticImageStream/0.2.0 (https://github.com/sporemound/semantic-image-stream; https://github.com/sporemound)"
 UNKNOWN_LICENSE = "Unknown — check source before reuse"
 MAX_METADATA_BYTES = 2_000_000
 _GENERATED = re.compile(
@@ -40,6 +40,8 @@ class SearchProvider(Protocol):
     name: str
 
     async def search(self, query: str, limit: int) -> list[ImageCandidate]: ...
+
+    async def search_page(self, query: str, limit: int, page: int) -> list[ImageCandidate]: ...
 
     async def close(self) -> None: ...
 
@@ -170,19 +172,23 @@ class _HTTPProvider:
         return value
 
     async def search(self, query: str, limit: int = 10) -> list[ImageCandidate]:
+        return await self.search_page(query, limit, 0)
+
+    async def search_page(self, query: str, limit: int, page: int) -> list[ImageCandidate]:
+        _validate_page(page)
         query = sanitize_query(query)
         limit = max(0, min(int(limit), 50))
         if not query or not limit:
             return []
         try:
             async with asyncio.timeout(self.settings.download_timeout):
-                return (await self._search(query, limit))[:limit]
+                return (await self._search(query, limit, page))[:limit]
         except ProviderError:
             raise
         except (httpx.HTTPError, TimeoutError, ValueError, TypeError, KeyError) as error:
             raise ProviderError(f"{self.name} search failed ({type(error).__name__})") from error
 
-    async def _search(self, query: str, limit: int) -> list[ImageCandidate]:
+    async def _search(self, query: str, limit: int, page: int = 0) -> list[ImageCandidate]:
         raise NotImplementedError
 
     async def close(self) -> None:
@@ -194,15 +200,18 @@ class WikimediaProvider(_HTTPProvider):
     """Commons Action API generator search + imageinfo, including attribution."""
     name = "wikimedia"
 
-    async def _search(self, query: str, limit: int) -> list[ImageCandidate]:
-        data = await self._json("https://commons.wikimedia.org/w/api.php", {
+    async def _search(self, query: str, limit: int, page: int = 0) -> list[ImageCandidate]:
+        params = {
             "action": "query", "format": "json", "formatversion": "2",
             "generator": "search", "gsrsearch": query, "gsrnamespace": "6",
             "gsrlimit": min(limit, 20), "prop": "imageinfo", "iilimit": "1",
             "iiprop": "url|size|mime|thumbmime|extmetadata", "iiurlwidth": "1600",
             "iiextmetadatalanguage": "en", "maxlag": "5",
             "iiextmetadatafilter": "Artist|Credit|LicenseShortName|LicenseUrl|UsageTerms|ImageDescription|Categories|ObjectName",
-        })
+        }
+        if page:
+            params["gsroffset"] = page * limit
+        data = await self._json("https://commons.wikimedia.org/w/api.php", params)
         pages = _dict(data.get("query")).get("pages", [])
         # Accept both documented formatversion layouts for compatibility.
         if isinstance(pages, dict):
@@ -242,8 +251,11 @@ class OpenverseProvider(_HTTPProvider):
     """Anonymous Openverse image API; rate limits are left intact."""
     name = "openverse"
 
-    async def _search(self, query: str, limit: int) -> list[ImageCandidate]:
-        data = await self._json("https://api.openverse.org/v1/images/", {"q": query, "page_size": limit})
+    async def _search(self, query: str, limit: int, page: int = 0) -> list[ImageCandidate]:
+        params = {"q": query, "page_size": limit}
+        if page:
+            params["page"] = page + 1
+        data = await self._json("https://api.openverse.org/v1/images/", params)
         candidates = []
         for row in _rows(data.get("results")):
             title = plain_text(row.get("title"), "Untitled image", 300)
@@ -270,11 +282,13 @@ class InternetArchiveProvider(_HTTPProvider):
     """Search image items, then inspect documented item metadata for real files."""
     name = "archive"
 
-    async def _search(self, query: str, limit: int) -> list[ImageCandidate]:
+    async def _search(self, query: str, limit: int, page: int = 0) -> list[ImageCandidate]:
         # Quote terms so topic words cannot inject Solr field filters/operators.
         terms = " ".join('"' + word.replace('"', '') + '"' for word in query.split())
         params = [("q", f"({terms}) AND mediatype:image"), ("rows", str(min(limit, 10))),
                   ("output", "json"), ("fl[]", "identifier")]
+        if page:
+            params.append(("page", str(page + 1)))
         data = await self._json("https://archive.org/advancedsearch.php", params)
         identifiers = []
         for row in _rows(_dict(data.get("response")).get("docs")):
@@ -360,9 +374,17 @@ class DuckDuckGoProvider:
         self._inflight = False
 
     async def search(self, query: str, limit: int = 10) -> list[ImageCandidate]:
+        return await self.search_page(query, limit, 0)
+
+    async def search_page(self, query: str, limit: int, page: int) -> list[ImageCandidate]:
+        _validate_page(page)
         query, limit = sanitize_query(query), max(0, min(int(limit), 50))
         if not query or not limit:
             return []
+        offset = page * limit
+        if offset >= 200:
+            return []
+        requested = min(200, (page + 1) * limit)
         if self._inflight:
             raise ProviderError("duckduckgo previous request is still finishing")
         if self._factory is None:
@@ -388,7 +410,7 @@ class DuckDuckGoProvider:
         def run() -> None:
             try:
                 engine = self._factory(timeout=self.settings.download_timeout)
-                value = engine.images(query, max_results=limit, safesearch="moderate", backend="duckduckgo")
+                value = engine.images(query, max_results=requested, safesearch="moderate", backend="duckduckgo")
                 error = None
             except Exception as exception:
                 value, error = None, exception
@@ -408,7 +430,8 @@ class DuckDuckGoProvider:
         except Exception as error:
             raise ProviderError(f"duckduckgo search failed ({type(error).__name__})") from error
         candidates = []
-        for row in _rows(rows):
+        page_rows = rows[offset:offset + limit] if isinstance(rows, list) else []
+        for row in _rows(page_rows):
             title = plain_text(row.get("title"), "Untitled image", 300)
             if _generated_flag(row) or is_known_generated(title, row.get("source"), row.get("description")):
                 continue
@@ -423,6 +446,11 @@ class DuckDuckGoProvider:
 
     async def close(self) -> None:
         pass
+
+
+def _validate_page(page: int) -> None:
+    if type(page) is not int or not 0 <= page <= 9:
+        raise ProviderError("Search page must be an integer between 0 and 9")
 
 
 def build_providers(settings: Settings) -> list[SearchProvider]:

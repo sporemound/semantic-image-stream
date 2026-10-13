@@ -82,8 +82,9 @@ def restore_session(data):
         raise ValueError("Invalid saved session identity")
     revision = _integer(data.get("revision"))
     book = _text(data.get("book_context", ""), 2000)
-    key = _texts(data.get("provider_key", []), 3, 2000)
-    if key and (len(key) != 3 or key[0] not in {"contextual", "spacy", "ollama"}):
+    key = _texts(data.get("provider_key", []), 4, 2000)
+    if key and (len(key) not in {3, 4} or key[0] not in {"contextual", "spacy", "ollama"}
+                or (len(key) == 4 and (key[0] != "ollama" or not re.fullmatch(r"[a-f0-9]{64}", key[3])))):
         raise ValueError("Invalid saved interpreter")
     rows = data.get("segments")
     if not isinstance(rows, list) or len(rows) > 1_000_000:

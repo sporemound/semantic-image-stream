@@ -3,6 +3,7 @@ from collections import Counter, deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import asyncio
+from email.utils import parsedate_to_datetime
 import json
 import logging
 import queue
@@ -20,6 +21,17 @@ from .semantic_analysis import TopicGate, build_analyzer, fallback_queries, sani
 
 log = logging.getLogger(__name__)
 GPU_LOCK = threading.Lock()
+
+
+def _interpreter_key(settings):
+    key = (settings.semantic_provider, getattr(settings, "context_model", ""),
+           getattr(settings, "book_context", ""))
+    if settings.semantic_provider == "ollama":
+        from .story_references import story_references_for
+        identity = story_references_for(settings).identity
+        if identity:
+            key += (identity,)
+    return key
 
 
 @dataclass
@@ -116,7 +128,12 @@ class Pipeline:
         self.session_state = session_state if session_state is not None else SessionState()
         self._segments = self.session_state.segments
         self._segments_lock = self.session_state.lock
-        self._recent_hashes = deque(maxlen=100)
+        self._recent_hashes = set()
+        self._displayed_urls = set()
+        self._query_pages = {}
+        self._refresh_queries = set()
+        self._last_query_failed = False
+        self._source_retry_at = {}
         self._protected_paths = deque(maxlen=120)
         self._history_lock = threading.Lock()
         self._generation = 0
@@ -183,6 +200,9 @@ class Pipeline:
         cache = Cache(self.settings)
         downloader = ImageDownloader(self.settings)
         self._cache = cache
+        with self._history_lock:
+            self._recent_hashes.update(cache.seen_phashes())
+            self._displayed_urls.update(cache.seen_urls())
         self.capture_done = False
         with self._segments_lock:
             capture_offset = max((segment.end for segment in self._segments), default=0.0)
@@ -340,17 +360,21 @@ class Pipeline:
             await asyncio.sleep(self.settings.semantic_interval)
 
     def _session_analyzer(self):
-        key = (self.settings.semantic_provider, getattr(self.settings, "context_model", ""),
-               getattr(self.settings, "book_context", ""))
+        key = _interpreter_key(self.settings)
         changed, reread = False, False
         try:
             with self._segments_lock:
                 state = self.session_state
-                matching = state.provider_key == key
+                exact_key = state.provider_key == key
+                # Adding non-factual illustrations need not replay hours of a
+                # valid saved book. The new analyzer must still verify the old
+                # checkpoint digest and every accepted fact against raw text.
+                legacy_pack_addition = len(key) == 4 and state.provider_key == key[:3]
+                matching = exact_key or legacy_pack_addition
                 if state.book_context != self.settings.book_context:
                     state.book_context = self.settings.book_context
                     changed = True
-                if state.analyzer is not None and matching:
+                if state.analyzer is not None and exact_key:
                     return state.analyzer
                 checkpoint = state.analyzer_checkpoint if matching else None
                 if not matching:
@@ -402,8 +426,7 @@ class Pipeline:
         else:
             return None
         checkpoint_changed = False
-        key = (self.settings.semantic_provider, getattr(self.settings, "context_model", ""),
-               getattr(self.settings, "book_context", ""))
+        key = _interpreter_key(self.settings)
         try:
             if self.stop_event.is_set():
                 return None
@@ -485,7 +508,11 @@ class Pipeline:
         if self._approved_generation != generation or self._scope_changed(self._approved_scope, scope):
             self._approved_images.clear()
             self._approved_scope, self._approved_generation = scope, generation
-        self._approved_images = {url: image for url, image in self._approved_images.items() if image.path.is_file()}
+        with self._history_lock:
+            seen_urls, seen_hashes = set(self._displayed_urls), list(self._recent_hashes)
+        self._approved_images = {url: image for url, image in self._approved_images.items()
+                                 if image.path.is_file() and url not in seen_urls
+                                 and not is_duplicate(image.phash, seen_hashes)}
 
     def _emit_context(self, phase, message, playback_changed=False):
         with self._segments_lock:
@@ -507,7 +534,16 @@ class Pipeline:
 
     async def _search(self, providers, downloader, ranker, cache):
         while not self.stop_event.is_set():
-            generation, topic = await self.topic_queue.get()
+            try:
+                generation, topic = await asyncio.wait_for(self.topic_queue.get(), timeout=.25)
+            except asyncio.TimeoutError:
+                topic = self._latest_topic
+                if not topic or not topic.query:
+                    continue
+                self._sync_image_pool(topic)
+                if len(self._approved_images) >= self.settings.prefetch_count:
+                    continue
+                generation = self._generation
             delay = self.settings.search_interval - (time.monotonic() - self._last_search)
             if delay > 0:
                 await asyncio.sleep(delay)
@@ -529,10 +565,31 @@ class Pipeline:
             published = False
             ranking_failed = False
             while not self.stop_event.is_set():
-                candidates = await self._query_candidates(query, providers, cache)
+                page_key = query.casefold()
+                page = self._query_pages.get(page_key, 0)
+                previous_failures = attempt_failures.copy()
+                candidates = await self._query_candidates(query, providers, cache, page=page,
+                                                          refresh=page_key in self._refresh_queries)
+                failed_query = self._last_query_failed
+                self._refresh_queries.discard(page_key)
+                if failed_query:
+                    # A blocked page is not an exhausted page. Retry it after
+                    # source backoff, retaining successful partial results.
+                    self._refresh_queries.add(page_key)
+                    attempt_failures["Source unavailable"] += 1
                 published, ranking_failed = await self._evaluate_candidates(
                     topic, candidates, query_basis if is_fallback else None,
                     query if is_fallback else None, downloader, ranker, cache, rejected_urls, attempt_failures, attempt_stats)
+                transient_page = failed_query or any(attempt_failures[reason] > previous_failures[reason]
+                    for reason in ("Source temporarily rate-limited", "Source unavailable", "Network error", "Image download timed out"))
+                if not transient_page and not ranking_failed:
+                    self._query_pages[page_key] = (page + 1) % 10
+                    if page == 9:
+                        self._refresh_queries.add(page_key)
+                if len(self._query_pages) > 200:
+                    oldest = next(iter(self._query_pages))
+                    self._query_pages.pop(oldest)
+                    self._refresh_queries.discard(oldest)
                 # Raw source hits are not usable matches. Try the remaining
                 # subjects only after validation/ranking exhausts this batch.
                 # A failed local ranker instead retains its explicit diagnostic.
@@ -563,7 +620,7 @@ class Pipeline:
                 count = len(self._approved_images)
                 message = (f"{count} relevant images ready for this scene." if count >= self.settings.prefetch_count else
                            f"{count}/{self.settings.prefetch_count} relevant images ready. No further images passed the current checks; "
-                           "new story subjects will refresh the set.")
+                           "continuing to look for fresh matches.")
                 if transient and count < self.settings.prefetch_count:
                     message = (f"{count}/{self.settings.prefetch_count} relevant images ready. Some image sources are temporarily unavailable; "
                                "keeping ready images while they retry.")
@@ -597,7 +654,10 @@ class Pipeline:
         by_url = {}
         for candidate in candidates:
             by_url.setdefault(candidate.image_url, candidate)
-        unique = [candidate for url, candidate in by_url.items() if url not in self._approved_images]
+        with self._history_lock:
+            seen_urls = set(self._displayed_urls)
+        unique = [candidate for url, candidate in by_url.items()
+                  if url not in self._approved_images and url not in seen_urls]
         attempt_stats["found"] += len(unique)
         # Rank metadata before prefetch to start with promising source
         # images; retain other candidates for actual multimodal ranking.
@@ -631,8 +691,9 @@ class Pipeline:
                 else:
                     message = f"Downloaded {downloaded} images, but none are new matches for the current discussion."
             elif phase == "loading":
-                message = ("Loading the local image relevance model; first use may download weights. "
-                           "Speech monitoring continues.")
+                message = ("Loading the cached local trained relevance model. " if ranker.name == "learned_context" else
+                           "Loading the local image relevance model; first use may download weights. ")
+                message += "Speech monitoring continues."
             else:
                 message = f"Checking images · {downloaded} downloaded from {len(unique)} results"
             if (self._latest_topic or topic) is fallback_topic:
@@ -698,7 +759,7 @@ class Pipeline:
                     generation = self.session_state.playback_generation
                     new_scene = (ranked_generation != generation or self._scope_changed(ranked_scope, scope))
                     to_rank = prepared if new_scene else [image]
-                    if ranker.name in {"clip", "context_clip"} and getattr(ranker, "model", None) is None:
+                    if ranker.name in {"clip", "context_clip", "learned_context"} and getattr(ranker, "model", None) is None:
                         report("loading", len(published), best_score)
                     try:
                         batch = (await _background(ranker.rank, current, to_rank, recent)) if current.query else []
@@ -731,15 +792,19 @@ class Pipeline:
                 if best_score is not None:
                     attempt_stats["best_score"] = max(best_score, attempt_stats["best_score"] or 0.0)
                 chosen, hashes = [], list(recent)
+                with self._history_lock:
+                    displayed_urls = set(self._displayed_urls)
+                    hashes = list(self._recent_hashes)
                 for candidate in ranked:
                     other_hashes = [approved.phash for url, approved in self._approved_images.items()
                                     if url != candidate.image_url]
-                    if (candidate.score >= self.settings.relevance_threshold
+                    if (candidate.image_url not in displayed_urls and candidate.image_url not in self._approved_images
+                            and candidate.score >= self.settings.relevance_threshold
                             and not is_duplicate(candidate.phash, hashes)
                             and not is_duplicate(candidate.phash, other_hashes)):
                         chosen.append(candidate)
                         hashes.append(candidate.phash)
-                        if len(chosen) >= self.settings.prefetch_count:
+                        if len(chosen) + len(self._approved_images) >= self.settings.prefetch_count:
                             break
                 selection = (current.query, *(c.image_url for c in chosen))
                 if chosen and selection != last_selection:
@@ -747,7 +812,7 @@ class Pipeline:
                     self._protected_paths.extend(c.local_path for c in chosen)
                     published.update(c.image_url for c in chosen)
                     self._approved_images.update((candidate.image_url, candidate) for candidate in chosen)
-                    self.emit("images", chosen)
+                    self.emit("images", sorted(self._approved_images.values(), key=lambda candidate: candidate.score, reverse=True))
                     self.emit("status", f"Ready: {len(chosen)} relevant images · {ranker.name} ranking")
                 report("ready" if self._approved_images else "downloading", len(self._approved_images), best_score)
                 if len(self._approved_images) >= self.settings.prefetch_count:
@@ -761,25 +826,45 @@ class Pipeline:
             report("ready" if self._approved_images else "empty", len(self._approved_images), best_score)
         return bool(published), ranking_failed
 
-    async def _query_candidates(self, query, providers, cache):
+    async def _query_candidates(self, query, providers, cache, page=0, refresh=False):
+        self._last_query_failed = False
         identity = [query.casefold(), self.settings.providers, self.settings.results_per_provider]
         if "duckduckgo" in self.settings.providers:
             # Older combined cache entries can contain only the other sources'
             # partial results after DDGS's malformed HTTP/2 header failed.
             # Refresh those queries once while retaining image/history caches.
             identity.append("duckduckgo-http2-v1")
+        if page:
+            identity.append({"page": page})
         key = json.dumps(identity)
         cached = cache.get_query(key)
-        if cached is not None:
+        if cached is not None and not refresh:
             return cached
         self.emit("status", "Retrieving existing images from selected sources…")
-        results = await asyncio.gather(*(p.search(query, self.settings.results_per_provider) for p in providers),
+        async def search(provider):
+            if time.monotonic() < self._source_retry_at.get(provider.name, 0):
+                return []
+            if not page:
+                return await provider.search(query, self.settings.results_per_provider)
+            paged = getattr(provider, "search_page", None)
+            return await paged(query, self.settings.results_per_provider, page) if paged else []
+        results = await asyncio.gather(*(search(p) for p in providers),
                                        return_exceptions=True)
         candidates = []
         succeeded = True
         for provider, result in zip(providers, results):
             if isinstance(result, Exception):
                 succeeded = False
+                self._last_query_failed = True
+                response = getattr(result, "response", None) or getattr(getattr(result, "__cause__", None), "response", None)
+                if response is not None and response.status_code == 429:
+                    delay = 30.0
+                    value = response.headers.get("Retry-After", "")
+                    try:
+                        delay = max(delay, float(value)) if value.isdigit() else max(delay, parsedate_to_datetime(value).timestamp() - time.time())
+                    except (ValueError, TypeError, OverflowError):
+                        pass
+                    self._source_retry_at[provider.name] = time.monotonic() + delay
                 self.emit("status", f"{provider.name} unavailable ({type(result).__name__}); trying other sources.")
             else:
                 candidates.extend(result)
@@ -793,7 +878,8 @@ class Pipeline:
     def _report_ranking_failure(self, ranker, error, found, downloaded, accepted=0):
         # Exception text can include file paths, URLs or private model inputs.
         # The class name and selected ranking method give a safe diagnostic.
-        name = {"clip": "CLIP", "context_clip": "context CLIP", "metadata": "metadata"}.get(ranker.name, "selected")
+        name = {"clip": "CLIP", "context_clip": "context CLIP", "learned_context": "trained relevance",
+                "metadata": "metadata"}.get(ranker.name, "selected")
         reason = "Local image ranking failed"
         log.warning("Image ranking failed (%s)", type(error).__name__)
         message = (f"Local {name} image ranking failed ({type(error).__name__}). "
@@ -814,13 +900,21 @@ class Pipeline:
 
     def record_displayed(self, image):
         with self._history_lock:
-            self._recent_hashes.append(image.phash)
+            if re.fullmatch(r"[a-f0-9]{16}", image.phash or ""):
+                self._recent_hashes.add(image.phash)
+            self._displayed_urls.add(image.image_url)
         cache = getattr(self, "_cache", None)
         if cache:
             try:
                 cache.record(image)
             except Exception:
                 pass  # may race shutdown; never disrupt presentation
+        else:
+            with_cache = Cache(self.settings)
+            try:
+                with_cache.record(image)
+            finally:
+                with_cache.close()
 
     def clear_cache(self):
         if self.running:
@@ -839,3 +933,6 @@ class Pipeline:
             with_cache.clear_history()
         finally:
             with_cache.close()
+        with self._history_lock:
+            self._recent_hashes.clear()
+            self._displayed_urls.clear()

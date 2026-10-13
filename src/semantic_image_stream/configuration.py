@@ -35,6 +35,8 @@ class Settings:
     book_context: str = ""
     retain_context: bool = True
     session_dir: str = ""
+    training_dir: str = ""
+    use_story_examples: bool = True
     context_cpu_threads: int = 6
     context_timeout: float = 180.0
     providers: list[str] = field(default_factory=lambda: ["wikimedia"])
@@ -66,7 +68,7 @@ class Settings:
         self.cache_dir = str(Path(os.path.expandvars(self.cache_dir)).expanduser().resolve())
         enums = {"audio_mode": {"loopback", "microphone", "file"},
                  "whisper_device": {"auto", "cuda", "cpu"},
-                 "ranking": {"metadata", "clip", "context_clip"},
+                 "ranking": {"metadata", "clip", "context_clip", "learned_context"},
                  "semantic_provider": {"contextual", "spacy", "ollama"},
                  "transition": {"crossfade", "dissolve", "zoom", "cut"},
                  "clip_device": {"cpu", "cuda"}}
@@ -113,6 +115,11 @@ class Settings:
         if (not isinstance(self.session_dir, str) or len(self.session_dir) > 4096
                 or any(character in self.session_dir for character in "\x00\r\n")):
             raise ValueError("session_dir must name a local folder")
+        if (not isinstance(self.training_dir, str) or len(self.training_dir) > 4096
+                or any(character in self.training_dir for character in "\x00\r\n")):
+            raise ValueError("training_dir must name a local folder")
+        if not isinstance(self.use_story_examples, bool):
+            raise ValueError("use_story_examples must be true or false")
         if self.context_cpu_threads > 32:
             raise ValueError("context_cpu_threads must be at most 32")
         return self

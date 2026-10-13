@@ -701,7 +701,7 @@ def test_rebuild_loaded_analyzer_preserves_matching_context_and_scope(tmp_path, 
 
 @pytest.mark.parametrize("reason", ["corrupt", "model_changed", "missing"])
 def test_invalid_saved_model_context_rereads_all_raw_without_loss(tmp_path, monkeypatch, reason):
-    settings = Settings(cache_dir=str(tmp_path), semantic_provider="ollama", context_model="current-local")
+    settings = Settings(cache_dir=str(tmp_path), semantic_provider="ollama", context_model="current-local", use_story_examples=False)
     segments = [TranscriptSegment(0, 400, "An earlier private recorded passage.")]
     old_key = ("ollama", "other-local" if reason == "model_changed" else settings.context_model, "")
     state = SessionState(segments=segments, provider_key=old_key, topic=Topic("Arctic camp", "Earlier context"),
@@ -729,7 +729,7 @@ def test_invalid_saved_model_context_rereads_all_raw_without_loss(tmp_path, monk
 
 @pytest.mark.parametrize("fails", [False, True])
 def test_analysis_worker_checkpoints_partial_progress_even_when_model_fails(tmp_path, fails):
-    settings = Settings(cache_dir=str(tmp_path), semantic_provider="ollama")
+    settings = Settings(cache_dir=str(tmp_path), semantic_provider="ollama", use_story_examples=False)
     checkpoint = {"cursor": 1, "accepted_state": {"summary": "Grounded story context"}}
 
     class Analyzer:

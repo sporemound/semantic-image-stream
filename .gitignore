@@ -14,3 +14,8 @@ sessions/
 cache/
 validation-output/
 work/
+.training-pack/
+training-data/
+public-embeddings.npz
+fairytaleqa-train.csv
+.relevance-*.tmp

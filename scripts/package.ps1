@@ -7,7 +7,7 @@ if (-not $PythonPath) { $PythonPath = Join-Path $repoDirectory ".venv\Scripts\py
 if ($LASTEXITCODE -ne 0) { throw "Packaging dependency installation failed." }
 & $PythonPath -m PyInstaller --noconfirm --clean --onedir --windowed --name SemanticImageStream `
     --collect-all faster_whisper --collect-all ctranslate2 --collect-all av --collect-all tokenizers `
-    --collect-submodules semantic_image_stream --exclude-module PySide6.QtWebEngineCore `
+    --collect-submodules semantic_image_stream --collect-data semantic_image_stream --exclude-module PySide6.QtWebEngineCore `
     --exclude-module PySide6.QtWebEngineWidgets --exclude-module PySide6.QtWebEngineQuick `
     --add-data "LICENSE;." --add-data "docs/third-party.md;." scripts/launcher.py
 if ($LASTEXITCODE -ne 0) { throw "Packaging failed." }

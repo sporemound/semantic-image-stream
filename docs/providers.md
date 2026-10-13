@@ -16,4 +16,6 @@ The DuckDuckGo adapter removes its library's `Connection` header from each owned
 
 ## Request identification
 
+Monitoring continuously replenishes its unseen-image queue, including when the current spoken scene remains unchanged. Discovery scans up to ten pages per query before refreshing its first page; the DuckDuckGo adapter has a 200-result prefix bound. Relevance and geometry checks still apply to every result. Seen URLs and perceptual hashes prevent automatic replay across topics and launches. No fresh match leaves the last frame visible. HTTP 429 search responses honor Retry-After for the affected provider while other selected providers remain available.
+
 Direct API searches and image-download requests identify Semantic Image Stream with its project and maintainer profile URLs; DuckDuckGo discovery uses the DDGS client's identification. Wikimedia requires a descriptive User-Agent with contact information; unidentified clients may receive stricter throttling. See [Wikimedia's application guidance](https://www.mediawiki.org/wiki/InstantCommons#Configuration). The app still honors HTTP 429 and exact-host Retry-After cooldowns. Identification does not guarantee that a rate-limited source becomes available.

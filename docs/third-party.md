@@ -18,5 +18,7 @@ Dependency/model/image licenses are independent. This table is an orientation ai
 | Default Qwen2.5-7B-Instruct narrative weights | [Apache-2.0 model card](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct); manually cached separately and not bundled |
 | OpenAI Whisper weights; optional CLIP weights | Check the selected model card and model license. Defaults use MIT-licensed upstream OpenAI models. |
 | Retrieved images | Their individual source licenses, never the application's MIT license. Attribution JSON preserves reported reuse metadata; unknown licenses remain unknown. |
+| Bundled trained relevance calibration and museum training metadata | CC BY 4.0; source images/original museum metadata identified as CC0. Preserve [training notices](../src/semantic_image_stream/data/training/TRAINING_NOTICES.txt) and per-item credits in the manifest. Sampled image pixels and CLIP weights are not bundled. |
+| Bundled FairytaleQA human story examples | Apache 2.0 dataset annotations, separate underlying public-domain story rights; [full license](../src/semantic_image_stream/data/training/FAIRYTALEQA_LICENSE.txt). See [provenance and handling](training.md). |
 
 The packaging script is a build scaffold, not a completed compliance bundle. Before publishing a binary, include the actual installed dependencies' license files/notices, verify FFmpeg/Qt redistribution obligations, and provide needed source/replacement rights. No credentials or model weights are checked into the repository.

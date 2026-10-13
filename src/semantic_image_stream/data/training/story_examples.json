@@ -1,0 +1,2181 @@
+{
+  "version": 1,
+  "examples": [
+    {
+      "id": "fairytaleqa-train-1",
+      "source": "once upon a time there was a king who went forth into the world and fetched back a beautiful queen . and after they had been married a while god gave them a little daughter . then there was great rejoicing in the city and throughout the country , for the people wished their king all that was good , since he was kind and just . while the child lay in its cradle , a strange - looking old woman entered the room , and no one knew who she was nor whence she came . the old woman spoke a verse over the child , and said that she must not be allowed out under the open sky until she were full fifteen years of age , since otherwise the mountain troll would fetch her . when the king heard this he took her words to heart , and posted guards to watch over the little princess so that she would not get out under the open sky .",
+      "question": "what type of ruler was the king ?",
+      "answer": "kind and just .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "three-dogs",
+        "row_index": 1,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-4",
+      "source": "once upon a time there was a king who went forth into the world and fetched back a beautiful queen . and after they had been married a while god gave them a little daughter . then there was great rejoicing in the city and throughout the country , for the people wished their king all that was good , since he was kind and just . while the child lay in its cradle , a strange - looking old woman entered the room , and no one knew who she was nor whence she came . the old woman spoke a verse over the child , and said that she must not be allowed out under the open sky until she were full fifteen years of age , since otherwise the mountain troll would fetch her . when the king heard this he took her words to heart , and posted guards to watch over the little princess so that she would not get out under the open sky .",
+      "question": "what would happen if the child went under the open sky before she was full fifteen years of age ?",
+      "answer": "the mountain troll would fetch her .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "three-dogs",
+        "row_index": 4,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-65",
+      "source": "but the king was not so silly as to be fooled in that way . \" here is a jack , \" said he , \" who will soon have more stripes on his back than he will like . take him away and give him his whipping ! \" then it was done as the king had said , and paul went away home bawling like a calf . one day up spoke boots . \" i should like to go and have a try for the pretty princess , too , \" said he . at this they all stared and sniggered . what ! he go where his clever brothers had failed , and had nothing to show for the trying but a good beating ? what had come over the lout ! here was a pretty business , to be sure ! that was what they all said . but all of this rolled away from boots like water from a duck 's back . no matter , he would like to go and have a try like the others . so he begged and begged until his father was glad to let him go to be rid of his teasing , if nothing else . then boots asked if he might have the old tattered hat that hung back of the chimney .",
+      "question": "what did boots ask to have ?",
+      "answer": "the old tattered hat that hung back of the chimney .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "how-boots-befooled-king",
+        "row_index": 65,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-67",
+      "source": "oh , yes , he might have that if he wanted it , for nobody with good wits was likely to wear such a thing . so boots took the hat , and after he had brushed the ashes from his shoes set off for the town , whistling as he went . the first body whom he met was an old woman with a great load of earthenware pots and crocks on her shoulders . \" good - day , mother , \" said boots . \" good - day , son , \" said she . \" what will you take for all of your pots and crocks ? \" said boots . \" three shillings , \" said she . \" i will give you five shillings if you will come and stand in front of the king 's house , and do thus and so when i say this and that , \" said boots . oh , yes ! she would do that willingly enough . so boots and the old woman went on together , and presently came to the king 's house . when they had come there , boots sat down in front of the door and began bawling as loud as he could-\"no , i will not ! i will not do it , i say ! no , i will not do it ! \"",
+      "question": "where did boots and the old woman go togethe ?",
+      "answer": "the king 's house .",
+      "attribute": "setting",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "how-boots-befooled-king",
+        "row_index": 67,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-83",
+      "source": "once upon a time there was a woman who had a son . he was so lazy and slow that there was not a single blessed useful thing he would do . but he liked to sing and to dance , and that is what he did all day long , and far into the night as well . the longer this went on , the worse off his mother was . the youth was growing , and he wanted so much to eat that it was barely possible to find it . more and more went for his clothes the older he grew , since his clothes did not last long , as you may imagine , because the youth skipped and dance about without stopping , through forest and field . at length it was too much for his mother . one day she told the young fellow that he ought at last to get to work , and really do something , or both of them would have to starve to death . but the youth had no mind to do so , he said , and would rather try to win the daughter of the mother in the corner . if he got her , then he would live happily ever after , and could sing and dance , and would not have to plague himself with work .",
+      "question": "what happened because the son was so lazy and slow ?",
+      "answer": "there was not a single blessed useful thing he would do .",
+      "attribute": "outcome resolution",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "youth-who-wanted-to-win-daughter-of-mother-in-corner",
+        "row_index": 83,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-90",
+      "source": "when the mother heard that she thought it might not be such a bad idea after all . she dressed up the youth as well as she could , so that he would make a good showing when he came to the mother in the corner , and then he set forth . when he stepped out the sun was shining bright and warm . it had rained during the night , and the ground was soft and full of water puddles . the youth took the shortest path to the mother in the corner , and sang and danced , as he always did . but suddenly , as he was hopping and skipping along , he came to a swamp , and there were only some logs laid down to cross it . from the one log he had to jump over a puddle to a clump of grass , unless he wanted to dirty his shoes . and then he went kerflop ! the very moment he set foot on the clump of grass , he went down and down until he was standing in a dark , ugly hole . at first he could see nothing at all , but when he had been there a little while , he saw that there was a rat , who was wiggling and waggling around , and had a bunch of keys hanging from her tail .",
+      "question": "what happened when the youth set foot on the clump of grass ?",
+      "answer": "he went down and down until he was standing in a dark , ugly hole .",
+      "attribute": "outcome resolution",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "youth-who-wanted-to-win-daughter-of-mother-in-corner",
+        "row_index": 90,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-139",
+      "source": "once upon a time there was a peasant who wanted to go to sell a pig . after he had gone a while , he met a man who asked him where he was going with his pig . \" i want to sell it , \" answered the peasant , \" but i do not know what to do to get rid of it . \" \" go to the devil , \" said the man , \" he will be the first to rid you of it . \" so the peasant kept on along the broad highway .",
+      "question": "what did the peasant want to do ?",
+      "answer": "sell a pig .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "rooster-handmill-swarm-of-hornets",
+        "row_index": 139,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-141",
+      "source": "once upon a time there was a peasant who wanted to go to sell a pig . after he had gone a while , he met a man who asked him where he was going with his pig . \" i want to sell it , \" answered the peasant , \" but i do not know what to do to get rid of it . \" \" go to the devil , \" said the man , \" he will be the first to rid you of it . \" so the peasant kept on along the broad highway .",
+      "question": "where did the peasant keep on ?",
+      "answer": "the broad highway .",
+      "attribute": "setting",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "rooster-handmill-swarm-of-hornets",
+        "row_index": 141,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-161",
+      "source": "once upon a time there was a king , who reigned over a great kingdom . he had a queen , but only a single daughter , a girl . in consequence the little girl was the apple of her parents ' eyes . they loved her above everything else in the world , and their dearest thought was the pleasure they would take in her when she was older . but the unexpected often happens . before the king 's daughter began to grow up , the queen her mother fell ill and died . it is not hard to imagine the grief that reigned , not alone in the royal castle , but throughout the land ; for the queen had been beloved of all . the king grieved so that he would not marry again , and his one joy was the little princess .",
+      "question": "what did the king reign over ?",
+      "answer": "a great kingdom .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "werewolf",
+        "row_index": 161,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-174",
+      "source": "from that day forward the princess gave her father no peace , and begged him again and again to marry the good court lady . yet he did not want to marry her . but the king 's daughter gave him no rest . she urged him again and again , as the false court lady had persuaded her to do . finally , one day , when she again brought up the matter , the king cried : \" i can see you will end by having your own way about this , even though it be entirely against my will . but i will do so only on one condition . \" \" what is the condition ? \" asked the princess . \" if i marry again , \" said the king , \" it is only because of your ceaseless pleading . therefore you must promise that , if in the future you are not satisfied with your step - mother or your step - sisters , not a single lament or complaint on your part reaches my ears . \" this she promised the king , and it was agreed that he should marry the court lady and make her queen of the whole country .",
+      "question": "what did the princess beg her father to do ?",
+      "answer": "to marry the good court lady .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "werewolf",
+        "row_index": 174,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-219",
+      "source": "once the schoolmaster of etnedal was staying in the mountains to fish . he was very fond of reading , and so he always carried one book or another along with him , with which he could lie down , and which he read on holidays , or when the weather forced him to stay in the little fishing - hut . one sunday morning , as he was lying there reading , it seemed as though he could hear church bells ; sometimes they sounded faintly , as though from a great distance ; at other times the sound was clear , as though carried by the wind . he listened long and with surprise ; and did not trust his ears -- for he knew that it was impossible to hear the bells of the parish church so far out among the hills -- yet suddenly they sounded quite clearly on his ear . so he laid aside his book , stood up and went out . the sun was shining , the weather was fine , and one group of churchgoers after another passed him in their sunday clothes , their hymn - books in their hands . a little further on in the forest , where he had never before seen anything but trees and brush , stood an old wooden church .",
+      "question": "what did the schoolmaster do because of the church bell sound ?",
+      "answer": "laid aside his book , stood up and went out .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "secret-church",
+        "row_index": 219,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-220",
+      "source": "after a time the priest came by , and he was so old and decrepit that his wife and daughter led him . and when they came to the spot where the schoolmaster was standing , they stopped and invited him to come to church and hear mass . the schoolmaster thought for a moment ; but since it occurred to him that it might be amusing to see how these people worshiped god , he said he would go along , if he did not thereby suffer harm . no , no harm should come to him , said they , but rather a blessing . in the church all went forward in a quiet and orderly manner , there were neither dogs nor crying children to disturb the service , and the singing was good -- but he could not make out the words . when the priest had been led to the pulpit he delivered what seemed to the listening schoolmaster a really fine and edifying sermon -- but one , it appeared to him , of quite a peculiar trend of thought , which he was not always able to follow . nor did the \" our father in heaven ... \" sound just right , and the \" deliver us from evil ... \" he did not hear at all . nor was the name of jesus uttered ; and at the close no blessing was spoken .",
+      "question": "what did the priest, wife, and daughter do when they saw the schoolmaster ?",
+      "answer": "stopped and invited him to come to church and hear mass .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "secret-church",
+        "row_index": 220,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-234",
+      "source": "once upon a time there was a king who took such a joy in the chase , that he knew no greater pleasure than hunting wild beasts . early and late he camped in the forest with hawk and hound , and good fortune always followed his hunting . but it chanced one day that he could rouse no game , although he had tried in every direction since morning . and then , when evening was coming on , and he was about to ride home , he saw a dwarf or wild man running through the forest before him . the king at once spurred on his horse , rode after the dwarf , seized him and he was surprised at his strange appearance ; for he was small and ugly , like a troll , and his hair was as stiff as bean - straw . but no matter what the king said to him , he would return no answer , nor say a single word one way or another . this angered the king , who was already out of sorts because of his ill - success at the hunt , and he ordered his people to seize the wild man and guard him carefully lest he escape . then the king rode home .",
+      "question": "what did the king love to do ?",
+      "answer": "hunting wild beasts .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "princess-glass-mountain",
+        "row_index": 234,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-242",
+      "source": "once upon a time there was a king who took such a joy in the chase , that he knew no greater pleasure than hunting wild beasts . early and late he camped in the forest with hawk and hound , and good fortune always followed his hunting . but it chanced one day that he could rouse no game , although he had tried in every direction since morning . and then , when evening was coming on , and he was about to ride home , he saw a dwarf or wild man running through the forest before him . the king at once spurred on his horse , rode after the dwarf , seized him and he was surprised at his strange appearance ; for he was small and ugly , like a troll , and his hair was as stiff as bean - straw . but no matter what the king said to him , he would return no answer , nor say a single word one way or another . this angered the king , who was already out of sorts because of his ill - success at the hunt , and he ordered his people to seize the wild man and guard him carefully lest he escape . then the king rode home .",
+      "question": "what did the king order his people to do ?",
+      "answer": "seize the wild man and guard him carefully lest he escape .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "princess-glass-mountain",
+        "row_index": 242,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-302",
+      "source": "\" that may be as may be , \" said the swan maiden . \" for listen ! i serve the witch with three eyes . she lives on the glass hill that lies beyond the seven high mountains , the seven deep valleys , and the seven wide rivers ; are you man enough to go that far ? \" \" oh , yes , \" said the prince , \" i am man enough for that and more too . \" \" that is good , \" said the swan maiden , and thereupon she jumped down from the pear - tree to the earth . then she became a swan again , and bade the king 's son to mount upon her back at the roots of her wings . when he had done as she had told him , she sprang into the air and flew away , bearing him with her . on flew the swan , and on and on , until , by and by , she said , \" what do you see , king 's son ? \" \" i see the grey sky above me and the dark earth below me , but nothing else , \" said he . after that they flew on and on again , until , at last , the swan maiden said , \" what do you see now , king 's son ? \" \" i see the grey sky above me and the dark earth below me , but nothing else , \" said he .",
+      "question": "who lived on the glass hill ?",
+      "answer": "the witch with three eyes .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "swan-maiden",
+        "row_index": 302,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-307",
+      "source": "the prince was glad enough to do as she said , for nothing was to be gained by working at that task . so he laid his head in her lap , and she combed his hair with a golden comb till he fell fast asleep . when he awoke the swan maiden was gone , the sun was setting , and the stable was as clean as a plate . presently he heard the old witch coming , so up he jumped and began clearing away a straw here and a speck there , just as though he were finishing the work . \" you never did this by yourself ! \" said the old witch , and her brows grew as black as a thunder - storm . \" that may be so , and that may not be so , \" said the king 's son , \" but you lent no hand to help ; so now may i have the one who builds the fire and draws the water ? \"",
+      "question": "what did the stable look like when the prince woke up ?",
+      "answer": "clean as a plate .",
+      "attribute": "setting",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "swan-maiden",
+        "row_index": 307,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-323",
+      "source": "in a country , far across the sea , there once dwelt a great and mighty prince . he lived in a grand castle , which was full of beautiful furniture , and curious and rare ornaments . and among them was a lovely little glass shoe , which would only fit the tiniest foot imaginable . and as the prince was looking at it one day , it struck him what a dainty little lady she would need to be who wore such a very small shoe . and , as he liked dainty people , he made up his mind that he would never marry until he found a maiden who could wear the shoe , and that , when he found her , he would ask her to be his wife . and he called all his lords and courtiers to him , and told them of the determination that he had come to , and asked them to help him in his quest .",
+      "question": "what did the prince realize when he looked at the shoe ?",
+      "answer": "a dainty little lady she would need to be who wore such a very small shoe .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "nippit-fit-and-clippit-fit",
+        "row_index": 323,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-324",
+      "source": "in a country , far across the sea , there once dwelt a great and mighty prince . he lived in a grand castle , which was full of beautiful furniture , and curious and rare ornaments . and among them was a lovely little glass shoe , which would only fit the tiniest foot imaginable . and as the prince was looking at it one day , it struck him what a dainty little lady she would need to be who wore such a very small shoe . and , as he liked dainty people , he made up his mind that he would never marry until he found a maiden who could wear the shoe , and that , when he found her , he would ask her to be his wife . and he called all his lords and courtiers to him , and told them of the determination that he had come to , and asked them to help him in his quest .",
+      "question": "what did the prince decide to do ?",
+      "answer": "never marry until he found a maiden who could wear the shoe , and that , when he found her , he would ask her to be his wife .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "nippit-fit-and-clippit-fit",
+        "row_index": 324,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-361",
+      "source": "once upon a time there lived a man in the forest of dovre whose name was ola storbaekkjen . he was of giant build , powerful and fearless . during the winter he did not work , but traveled from one fair to another , hunting up quarrels and brawls . from christiansmarkt he went to branaes and konigsberg , and thence to grundsaet , and wherever he came squabbles and brawls broke out , and in every brawl he was the victor . in the summer he dealt in cattle at valders and the fjords , and fought with the fjord - folk and the hill people of halling and valders , and always had the best of it . but sometimes they scratched him a bit with the knife , did those folk .",
+      "question": "who lived in the forest of dovre ?",
+      "answer": "ola storbaekkjen .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "ola-storbaekkjen",
+        "row_index": 361,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-368",
+      "source": "now once , at the time of the hay harvest , he was home at baekkjen , and had lain down to take a little after - dinner nap under the penthouse . and he was taken into the hill , which happened in the following way : a man with a pair of gilded goat 's horns came along and butted ola , but ola fell upon him so that the man had to duck back , again and again . but the stranger stood up once more , and began to butt again . finally he took ola under his arm like a glove , and then both of them flew straight off into the hill .",
+      "question": "what did ola want to do when he was home ?",
+      "answer": "take a little after - dinner nap under the penthouse .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "ola-storbaekkjen",
+        "row_index": 368,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-376",
+      "source": "not far from baalsberg , near filkestad in the willandsharad , there is a hill in which a giant named stompe pilt once used to live . it happened one day that a goat - herd was driving his flock up the hill in which stompe pilt dwelt .",
+      "question": "what was a goat-herd doing one day ?",
+      "answer": "driving his flock up the hill in which stompe pilt dwelt .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "stompe-pilt",
+        "row_index": 376,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-382",
+      "source": "\" as you choose , \" said the youth , \" but then it will be my turn . \" \" may a troll with a crooked nose take you ! \" yelled the giant . \" may a flying devil carry you off ! \" answered the shepherd and he shot a sharp arrow against the giant 's body with his bow . \" what was that ? \" asked the giant , and tried to pull the arrow out of his body . \" that was a word of abuse , \" said the shepherd .",
+      "question": "what did the shepherd do as he answered the giant ?",
+      "answer": "shot a sharp arrow against the giant 's body with his bow .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "stompe-pilt",
+        "row_index": 382,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-388",
+      "source": "in a church - nave a specter sat night by night , and the specter 's name was torre jeppe . he was a dried - up corpse that could not decay . one night three tailors were working at a farmstead in the neighborhood . they were laughing and joking , and among other things they asked the girl in the house , who was known to be brave , what they would have to give her to go to church and fetch back torre jeppe . she could trust herself to do it , was her answer ; but they must give her a dress of home - spun wool for her trouble . that she should surely have , said the tailors , for they did not believe the girl would dare such a venture . yet she took the tailors at their word and really went .",
+      "question": "who was the specter ?",
+      "answer": "torre jeppe .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "torre-jeppe",
+        "row_index": 388,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-395",
+      "source": "when she reached the church , she took torre jeppe on her back , carried him home and sat him down on the bench beside the tailors . they timidly moved away ; but torre jeppe moved after them , and looked at them with his big eyes until they nearly lost their reason . in their terror they begged the girl in the name of god to deliver them from the specter . they would gladly give her another dress if she would only carry the dead man away again . they had no need to tell her twice , for she took torre jeppe on her back , and dragged him away again .",
+      "question": "what did the girl do when she reached the church ?",
+      "answer": "took torre jeppe on her back , carried him home and sat him down on the bench beside the tailors .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "torre-jeppe",
+        "row_index": 395,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-405",
+      "source": "once upon a time there was a girl who was to go to the wood and drive the cattle home ; but she did not find the herd , and losing her way instead , came to a great hill . it had gates and doors and she went in . there stood a table covered with all sorts of good things to eat . and there stood a bed as well , and in the bed lay a great snake . the snake said to the girl : \" sit down , if you choose ! eat , if you choose ! come and lie down in the bed , if you choose ! but if you do not choose , then do not do so . \" so the girl did nothing at all . at last the snake said : \" some people are coming now who want you to dance with them . but do not go along with them . \" straightway people arrived who wanted to dance with the girl ; but she would hear nothing of it .",
+      "question": "what did the girl do when she came to the great hill ?",
+      "answer": "went in .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "girl-and-snake",
+        "row_index": 405,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-406",
+      "source": "once upon a time there was a girl who was to go to the wood and drive the cattle home ; but she did not find the herd , and losing her way instead , came to a great hill . it had gates and doors and she went in . there stood a table covered with all sorts of good things to eat . and there stood a bed as well , and in the bed lay a great snake . the snake said to the girl : \" sit down , if you choose ! eat , if you choose ! come and lie down in the bed , if you choose ! but if you do not choose , then do not do so . \" so the girl did nothing at all . at last the snake said : \" some people are coming now who want you to dance with them . but do not go along with them . \" straightway people arrived who wanted to dance with the girl ; but she would hear nothing of it .",
+      "question": "who laid in the bed ?",
+      "answer": "a great snake .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "girl-and-snake",
+        "row_index": 406,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-419",
+      "source": "one day the king 's daughters were sitting together in their room , and their talk happened to turn on their husbands - to - be . the oldest said : \" if i ever marry , my husband must have golden hair and a a golden beard ! \" and the second exclaimed : \" and mine must have silver hair and a silver beard ! \" but the youngest princess held her tongue and said nothing . then her sisters asked her whether she did not want to wish for a husband . \" no , \" she answered , \" but if fate should give me a husband , i will be content to take him as he is , and were he no more than a lame dog . \" then the two other princesses laughed and joked about it , and told her the day might easily come when she would change her mind .",
+      "question": "what did the king's daughters talk about ?",
+      "answer": "their husbands - to - be .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "lame-dog",
+        "row_index": 419,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-453",
+      "source": "starkad , the hero of the legends , the bravest warrior in the army of the north , had fallen into disgrace with the king because of a certain princess , so he wandered up into norland , and settled down at rude in tuna , where he was known as the thrall of the alders or the red fellow .",
+      "question": "what was starkard known as in tuna ?",
+      "answer": "thrall of the alders or the red fellow .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "starkad-bale",
+        "row_index": 453,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-463",
+      "source": "one christmas the two women agreed that they would ride to christmas night mass , and whichever one of them woke up at the right time was to call the other , for in those days there was no such thing as a watch . it was about midnight when one of the women thought she heard a voice from the window , calling : \" i am going to set out now . \" she got up hurriedly and dressed herself , so that she might be able to ride with the other woman ; but since there was no time to eat , she took a piece of bread from the table along with her . in those times it was customary to bake the bread in the shape of a cross . it was a piece of this kind that the woman took and put in her pocket , in order to eat it underway . she rode as fast as she could , to catch up with her friend , but could not overtake her .",
+      "question": "what did the woman do because there was no time to eat ?",
+      "answer": "took a piece of bread from the table along with her .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "yuletide-specters",
+        "row_index": 463,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-471",
+      "source": "the church was full of lights , as was always the case when the christmas mass was said . as quickly as ever she could the woman tied up her horse , and hurriedly entered the church . it seemed to her that the church was crowded with people ; but all of them were headless , and at the altar stood the priest , in full canonicals but without a head . in her haste she did not at once see how things were ; but sat down in her accustomed place . as she sat down it seemed to her that some one said : \" if i had not stood godfather to you when you were christened , i would do away with you as you sit there , and now hurry and make yourself scarce , or it will be the worse for you ! \" then she realized that things were not as they should be , and ran out hastily .",
+      "question": "what did the woman do when she realized things were not as they should be ?",
+      "answer": "ran out hastily .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "yuletide-specters",
+        "row_index": 471,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-482",
+      "source": "the princess made a sour enough face at this , but , as the gooseherd would take nothing more nor less than what he had said , she and her maids had to tuck up their dresses and go up on the hill ; there she paid him his price , and brought home the silver looking - glass and the golden comb . the lad clasped the necklace about his throat , and , dear , dear , how all the folks did goggle and stare . \" see , \" said they , \" the princess has been giving the gooseherd the necklace from about her own throat . \" the third day it was a new thing the gooseherd had , for he brought out a musical box with figures on it , dressed up , and looking for all the world like real little men and women . he turned the handle , and when the music played it was sweeter than drops of honey . and all the while the little men and women bowed to one another and went through with a dance , for all the world as though they knew what they were about , and were doing it with their own wits .",
+      "question": "what happened when she and her maids went up the hill ?",
+      "answer": "she paid him his price , and brought home the silver looking - glass and the golden comb .",
+      "attribute": "outcome resolution",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "how-princess-pride-was-broken",
+        "row_index": 482,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-488",
+      "source": "but the lad did nothing but grumble and growl , and seemed as sore over his bargain as though he had been trying to trick a jew . what did he want with a lass for a wife who could neither brew nor bake nor boil blue beans ? that is what he said . all the same , they were hitched to the same plough , and there was nothing for it but to pull together the best they could . so off they packed , and the poor princess trudged after him and carried his bundle . so they went on until they came to a poor , mean little hut . there she had to take off her fine clothes and put on rags and tatters ; and that was the way she came home . \" well , \" said the gooseherd one day , \" it 's not the good end of the bargain that i have had in marrying ; all the same , one must make the best one can of a crooked stick when there is none other to be cut in the hedge . it is little or nothing you are fit for ; but here is a basket of eggs , and you shall take them to the market and sell them . \"",
+      "question": "where did the princess and the gooseherd stop walking ?",
+      "answer": "a poor , mean little hut .",
+      "attribute": "setting",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "how-princess-pride-was-broken",
+        "row_index": 488,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-592",
+      "source": "once upon a time there was a king , who had a queen that he loved with a great love . but after a time the queen died , and all he had left was an only daughter . and now that the king was a widower , his whole heart went out to the little princess . he cherished her as the apple of his eye . and the king 's young daughter grew up into the most lovely maiden ever known .",
+      "question": "how did the king's young daughter grow into ?",
+      "answer": "the most lovely maiden ever known .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "silverwhite-lillwacker",
+        "row_index": 592,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-596",
+      "source": "but there was no one to whom the king could entrust his daughter while he was away at war . so he had a great tower built out in the forest , provided it with a plentiful store of supplies . in it he shut up his daughter and a maid . and he had it proclaimed that every man , no matter who he might be , was forbidden to approach the tower in which he had placed his daughter and the maid , under pain of death .",
+      "question": "what did the king proclaim ?",
+      "answer": "every man , no matter who he might be , was forbidden to approach the tower in which he had placed his daughter and the maid , under pain of death .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "silverwhite-lillwacker",
+        "row_index": 596,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-636",
+      "source": "of all the young gallants in scotland in the thirteenth century , there was none more gracious and debonair than thomas learmont , laird of the castle of ercildoune , in berwickshire . he loved books , poetry , and music , which were uncommon tastes in those days ; and , above all , he loved to study nature , and to watch the habits of the beasts and birds that made their abode in the fields and woods round about his home . now it chanced that , one sunny may morning , thomas left his tower of ercildoune , and went wandering into the woods that lay about the huntly burn , a little stream that came rushing down from the slopes of the eildon hills . it was a lovely morning -- fresh , and bright , and warm , and everything was so beautiful that it looked as paradise might look .",
+      "question": "what did thomas learmont love to do ?",
+      "answer": "study nature , and to watch the habits of the beasts and birds that made their abode in the fields and woods round about his home .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "thomas-the-rhymer",
+        "row_index": 636,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-647",
+      "source": "and , to the young man 's horror , as soon as their lips had met , an awful change came over her . for her beautiful mantle and riding - skirt of silk seemed to fade away , leaving her clad in a long grey garment , which was just the colour of ashes . her beauty seemed to fade away also , and she grew old and wan ; and , worst of all , half of her abundant yellow hair went grey before his very eyes . she saw the poor man 's astonishment and terror , and she burst into a mocking laugh . \" i am not so fair to look on now as i was at first , \" she said , \" but that matters little , for thou hast sold thyself , thomas , to be my servant for seven long years . for whoso kisseth the fairy queen must e'en go with her to fairy - land , and serve her there till that time is past . \" when he heard these words poor thomas fell on his knees and begged for mercy . but mercy he could not obtain . the elfin queen only laughed in his face , and brought her dapple - grey palfrey close up to where he was standing .",
+      "question": "what happened after they kissed ?",
+      "answer": "an awful change came over her .",
+      "attribute": "outcome resolution",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "thomas-the-rhymer",
+        "row_index": 647,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-724",
+      "source": "one day the devil met kitta grau : \" where have you been , old man ? \" asked kitta grau , for she recognized him . \" well , \" said the evil one , \" i have been out on the farm where the newly wedded couple live . this is the third time i have tried to sow dissension between them . but they think so much of each other that it is a sheer impossibility . \" \" you talk like a real stupid . that is something i could bring about the very first time i went there , \" said kitta grau . \" if you can do that , you shall have a splendid pair of shoes , \" was the evil one 's reply . \" mind you keep your word ! \" said kitta , and turned toward the farm . there the woman was home alone , for her husband had gone to the forest . kitta said to the young wife : \" you really have a splendid husband . \"",
+      "question": "who did the devil meet ?",
+      "answer": "kitta grau .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "evil-one-kitta-grau",
+        "row_index": 724,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-725",
+      "source": "one day the devil met kitta grau : \" where have you been , old man ? \" asked kitta grau , for she recognized him . \" well , \" said the evil one , \" i have been out on the farm where the newly wedded couple live . this is the third time i have tried to sow dissension between them . but they think so much of each other that it is a sheer impossibility . \" \" you talk like a real stupid . that is something i could bring about the very first time i went there , \" said kitta grau . \" if you can do that , you shall have a splendid pair of shoes , \" was the evil one 's reply . \" mind you keep your word ! \" said kitta , and turned toward the farm . there the woman was home alone , for her husband had gone to the forest . kitta said to the young wife : \" you really have a splendid husband . \"",
+      "question": "where had the evil one been out on ?",
+      "answer": "the farm where the newly wedded couple live .",
+      "attribute": "setting",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "evil-one-kitta-grau",
+        "row_index": 725,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-744",
+      "source": "there was once a fox and a wolf , who set up house together in a cave near the sea - shore . although you may not think so , they got on very well for a time , for they went out hunting all day , and when they came back at night they were generally too tired to do anything but to eat their supper and go to bed . they might have lived together always had it not been for the slyness and greediness of the fox , who tried to over - reach his companion , who was not nearly so clever as he was . and this was how it came about .",
+      "question": "where did the fox and the wolf live ?",
+      "answer": "in a cave near the sea - shore .",
+      "attribute": "setting",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-fox-and-the-wolf",
+        "row_index": 744,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-754",
+      "source": "it chanced , one dark december night , that there was a dreadful storm at sea , and in the morning the beach was all strewn with wreckage . so as soon as it was daylight the two friends went down to the shore to see if they could find anything to eat . they had the good fortune to light on a great keg of butter , which had been washed overboard from some ship on its way home from ireland , where , as all the world knows , folk are famous for their butter . the simple wolf danced with joy when he saw it . \" marrowbones and trotters ! but we will have a good supper this night , \" cried he , licking his lips . \" let us set to work at once and roll it up to the cave . \"",
+      "question": "what did the wolf want to do after they found the butter ?",
+      "answer": "roll it up to the cave .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-fox-and-the-wolf",
+        "row_index": 754,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-797",
+      "source": "a famous hunter who lived in a remote part of the north had a fair wife and two sons , who were left in the lodge every day while he went out in quest of the animals whose flesh was their principal support . game was very abundant in those days , and his labors in the chase were well rewarded . they lived a long distance from any other lodge , and it was seldom that they saw any other faces than those of their own household . the two sons were still too young to follow their father in the hunt , and they were in the habit of diverting themselves within reach of the lodge . while thus engaged , they began to take note that a young man visited the lodge during their father 's absence , and that these visits were constantly renewed . at length the elder of the two said to his mother : \" my mother , who is this tall young man that comes here so often during our father 's absence ? does he wish to see him ? shall i tell him when he comes back this evening ? \"",
+      "question": "what did the two sons note ?",
+      "answer": "a young man visited the lodge during their father 's absence , and that these visits were constantly renewed .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-crane-that-crossed-the-river",
+        "row_index": 797,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-806",
+      "source": "they paid strict heed to his directions , and were soon safely landed on the other shore of the river . he returned and carried the father in the same way ; and then took his place once more where he had been first seen in the very midst of the eddies of the stream . but the woman , who had by this time reached the shore , cried out , \" come , my grandfather , and carry me over , for i have lost my children , and i am sorely distressed . \" the aged bird obeyed her summons , and flew to her side . he carefully repeated the warning that she was not to touch the crown of his head ; and he was so anxious that she should take it to heart , that he went over it a second and a third time , word by word . he begged her to bear in mind that she should respect his old age , if there was any sense of virtue left in her . she promised to obey ; but they were no sooner fairly embarked in the stream , than she stealthily sought to disregard the warning she had received . instantly the crane cast her into the rapids , and shook his wings as if to free himself of all acquaintance with her .",
+      "question": "what happened when the woman disregarded the warning she had received ?",
+      "answer": "the crane cast her into the rapids , and shook his wings as if to free himself of all acquaintance with her .",
+      "attribute": "outcome resolution",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-crane-that-crossed-the-river",
+        "row_index": 806,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-816",
+      "source": "there was once a little boy whose name was lars , and because he was so little he was called little lasse ; he was a brave little man , for he sailed round the world in a pea - shell boat . it was summer time , when the pea shells grew long and green in the garden . little lasse crept into the pea bed where the pea stalks rose high above his cap , and he picked seventeen large shells , the longest and straightest he could find . little lasse thought , perhaps , that no one saw him ; but that was foolish , for god sees everywhere . then the gardener came with his gun over his shoulder , and he heard something rustling in the pea bed . ' i think that must be a sparrow , ' he said . ' ras ! ras ! ' but no sparrows flew out , for little lasse had no wings , only two small legs . ' wait ! i will load my gun and shoot the sparrows , ' said the gardener . then little lasse was frightened , and crept out on to the path . ' forgive me , dear gardener ! ' he said . ' i wanted to get some fine boats . ' ' well , i will this time , ' said the gardener . ' but another time little lasse must ask leave to go and look for boats in the pea bed . '",
+      "question": "what did lars sail around the world with ?",
+      "answer": "a pea - shell boat .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "little-lasse",
+        "row_index": 816,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-818",
+      "source": "there was once a little boy whose name was lars , and because he was so little he was called little lasse ; he was a brave little man , for he sailed round the world in a pea - shell boat . it was summer time , when the pea shells grew long and green in the garden . little lasse crept into the pea bed where the pea stalks rose high above his cap , and he picked seventeen large shells , the longest and straightest he could find . little lasse thought , perhaps , that no one saw him ; but that was foolish , for god sees everywhere . then the gardener came with his gun over his shoulder , and he heard something rustling in the pea bed . ' i think that must be a sparrow , ' he said . ' ras ! ras ! ' but no sparrows flew out , for little lasse had no wings , only two small legs . ' wait ! i will load my gun and shoot the sparrows , ' said the gardener . then little lasse was frightened , and crept out on to the path . ' forgive me , dear gardener ! ' he said . ' i wanted to get some fine boats . ' ' well , i will this time , ' said the gardener . ' but another time little lasse must ask leave to go and look for boats in the pea bed . '",
+      "question": "who saw lars pick seventeen large shells ?",
+      "answer": "the gardener .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "little-lasse",
+        "row_index": 818,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-854",
+      "source": "in byegone days , in an old farmhouse which stood by a river , there lived a beautiful girl called maisie . she was tall and straight , with auburn hair and blue eyes , and she was the prettiest girl in all the valley . and one would have thought that she would have been the pride of her mother 's heart . but , instead of this , her mother used to sigh and shake her head whenever she looked at her . and why ? because , in those days , all men were sensible ; and instead of looking out for pretty girls to be their wives , they looked out for girls who could cook and spin , and who gave promise of becoming notable housewives .",
+      "question": "who was tall and straight, with auburn hair and blue eyes, and she was the prettiest girl in all the valley ?",
+      "answer": "maisie .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "habetrot-the-spinstress",
+        "row_index": 854,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-856",
+      "source": "in byegone days , in an old farmhouse which stood by a river , there lived a beautiful girl called maisie . she was tall and straight , with auburn hair and blue eyes , and she was the prettiest girl in all the valley . and one would have thought that she would have been the pride of her mother 's heart . but , instead of this , her mother used to sigh and shake her head whenever she looked at her . and why ? because , in those days , all men were sensible ; and instead of looking out for pretty girls to be their wives , they looked out for girls who could cook and spin , and who gave promise of becoming notable housewives .",
+      "question": "what did men look for in girls to be their wives ?",
+      "answer": "girls who could cook and spin , and who gave promise of becoming notable housewives .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "habetrot-the-spinstress",
+        "row_index": 856,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-920",
+      "source": "during the first half of the eighteenth century , several large estates in schonen were the property of the family of barnekow . or rather , they were property of its most distinguished representative at that time , margaret barnekow . she was the daughter of the famous captain and governor - general count rutger of aschenberg , and the wife of colonel kjell kristofer barnekow . a widow at twenty - nine , she herself took over the management of her large properties . she showed evidence of invincible courage , an endless capacity for work , and a tireless concern for all her many dependents and servitors .",
+      "question": "who owned several large estates in schonen ?",
+      "answer": "the family of barnekow .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "spectre-fjelkinge",
+        "row_index": 920,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-922",
+      "source": "during the first half of the eighteenth century , several large estates in schonen were the property of the family of barnekow . or rather , they were property of its most distinguished representative at that time , margaret barnekow . she was the daughter of the famous captain and governor - general count rutger of aschenberg , and the wife of colonel kjell kristofer barnekow . a widow at twenty - nine , she herself took over the management of her large properties . she showed evidence of invincible courage , an endless capacity for work , and a tireless concern for all her many dependents and servitors .",
+      "question": "how did margaret barnekow give evidence of invincible courage ?",
+      "answer": "she herself took over the management of her large properties .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "spectre-fjelkinge",
+        "row_index": 922,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-940",
+      "source": "that night he died , and his wife and son and daughter mourned for him seven days , and gave him a burial according to the custom of his people . but hardly was the time of mourning over , than the mother was attacked by a disease which was common in that country . ' i am going away from you , ' she said to her children , in a faint voice ; ' but first , my son , choose which you will have : blessing or property . ' ' property , certainly , ' answered the son . ' and you , my daughter ? ' ' i will have blessing , ' said the girl ; and her mother gave her much blessing , and that night she died .",
+      "question": "what choices did the mother give to her children ?",
+      "answer": "blessing or property .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-one-handed-girl",
+        "row_index": 940,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-941",
+      "source": "that night he died , and his wife and son and daughter mourned for him seven days , and gave him a burial according to the custom of his people . but hardly was the time of mourning over , than the mother was attacked by a disease which was common in that country . ' i am going away from you , ' she said to her children , in a faint voice ; ' but first , my son , choose which you will have : blessing or property . ' ' property , certainly , ' answered the son . ' and you , my daughter ? ' ' i will have blessing , ' said the girl ; and her mother gave her much blessing , and that night she died .",
+      "question": "what did the son choose after his mother asked him ?",
+      "answer": "property .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-one-handed-girl",
+        "row_index": 941,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1095",
+      "source": "once upon a time there was a poor man , who had only one son ; but one who was so lazy and clumsy that he did not want to do a stroke of work . \" if i am not to feed this bean - pole for the rest of my life , i 'll have to send him far away , where not a soul knows him , \" thought the father . \" once he is knocking about in the world , he will not be so likely to come home again . \" so he took his son and led him about in the world , far and wide , and tried to get him taken on as a serving man ; but no one would have him . finally , after wandering a long time , they came to a rich man , of whom it was said that he turned every shilling around seven times before he could make up his mind to part with it . he was willing to take the youth for a servant , and he was to work three years without pay . but at the end of the three years , his master was to go into town , two days in succession , and buy the first thing he saw , and on the third morning the youth himself was to go to town and also buy the first thing he met . and all this he was to receive in lieu of his wage .",
+      "question": "what conditions did the rich man have to take the youth as a servant ?",
+      "answer": "he was to work three years without pay .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "youth-who-was-to-serve-three-years-without-pay",
+        "row_index": 1095,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1098",
+      "source": "so the youth served out his three years , and did better than they had expected him to do . he was by no means a model serving - man ; but then his master was none of the best , either , for he let him go all that time in the same clothes he had worn when he entered his service , until , finally , one patch elbowed the other . now when his master was to go to do his buying , he set out as early as possible in the morning . \" costly wares are only to be seen by day , \" said he , \" they are not drifting about the street so early . it will probably cost me enough as it is , for what i find is a matter of purest chance . \" the first thing he saw on the street was an old woman , who was carrying a covered basket . \" good - day , granny , \" said the man . \" and good - day to you , daddy , \" said the old woman .",
+      "question": "when did the master go to do his buying ?",
+      "answer": "as early as possible in the morning .",
+      "attribute": "setting",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "youth-who-was-to-serve-three-years-without-pay",
+        "row_index": 1098,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1163",
+      "source": "there was but little light in the lodge , as the fire was low , and its fitful flashes , by disclosing their white faces and then dropping them in sudden darkness , served rather to increase than to dispel her fears . \" merciful spirit ! \" cried a voice from the opposite part of the lodge ; \" there are two corpses clothed with garments ! \" the hunter 's wife turned around , but seeing nobody save her little child , staring across from under his blanket , she said to herself , \" the boy can not speak ; the sounds were but the gusts of wind . \" she trembled , and was ready to sink to the earth . her husband at this moment entered , and in some measure relieved her alarm . he threw down the carcass of a large fat deer . \" behold what a fine and fat animal ! \" cried the mysterious females ; and they immediately ran and pulled off pieces of the whitest fat , which they greedily devoured .",
+      "question": "what did the husband throw down ?",
+      "answer": "the carcass of a large fat deer .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-two-jeebi",
+        "row_index": 1163,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1164",
+      "source": "there was but little light in the lodge , as the fire was low , and its fitful flashes , by disclosing their white faces and then dropping them in sudden darkness , served rather to increase than to dispel her fears . \" merciful spirit ! \" cried a voice from the opposite part of the lodge ; \" there are two corpses clothed with garments ! \" the hunter 's wife turned around , but seeing nobody save her little child , staring across from under his blanket , she said to herself , \" the boy can not speak ; the sounds were but the gusts of wind . \" she trembled , and was ready to sink to the earth . her husband at this moment entered , and in some measure relieved her alarm . he threw down the carcass of a large fat deer . \" behold what a fine and fat animal ! \" cried the mysterious females ; and they immediately ran and pulled off pieces of the whitest fat , which they greedily devoured .",
+      "question": "what did the mysterious females do when they saw the deer ?",
+      "answer": "ran and pulled off pieces of the whitest fat , which they greedily devoured .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-two-jeebi",
+        "row_index": 1164,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1195",
+      "source": "once upon a time there was a couple who had an only son named halvor . while he was still but a little lad , he would do nothing at all ; but was always sitting at the hearth , digging in the ashes . his parents apprenticed him here and apprenticed him there , to be taught something , but halvor never stayed . when he had been anywhere for a few days , he ran away again , went back home , sat down at the hearth , and dug in the ashes . but once a master mariner came along and asked whether halvor would not like to go with him , and sail the seas , and see foreign lands . indeed , halvor would like to do so very much , and it did not take him long to make up his mind .",
+      "question": "what was the name of the couple's only son ?",
+      "answer": "halvor .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "soria-moria-castle",
+        "row_index": 1195,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1197",
+      "source": "once upon a time there was a couple who had an only son named halvor . while he was still but a little lad , he would do nothing at all ; but was always sitting at the hearth , digging in the ashes . his parents apprenticed him here and apprenticed him there , to be taught something , but halvor never stayed . when he had been anywhere for a few days , he ran away again , went back home , sat down at the hearth , and dug in the ashes . but once a master mariner came along and asked whether halvor would not like to go with him , and sail the seas , and see foreign lands . indeed , halvor would like to do so very much , and it did not take him long to make up his mind .",
+      "question": "what happened when his parents tried to apprentice halvor ?",
+      "answer": "halvor never stayed .",
+      "attribute": "outcome resolution",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "soria-moria-castle",
+        "row_index": 1197,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1321",
+      "source": "wassamo was living with his parents on the shore of a large bay , far out in the north - east . one day , when the season had commenced for fish to be plenty , the mother of wassamo said to him , \" my son , i wish you would go to yonder point and see if you can not procure me some fish ; and ask your cousin to accompany you . \" he did so . they set out , and in the course of the afternoon they arrived at the fishing - ground . the cousin , being the elder , attended to the nets , and they encamped near by , using the bark of the birch for a lodge to shelter them through the night . they lit a fire , and while they sat conversing with each other , the moon arose . not a breath of wind disturbed the smooth surface of the lake . not a cloud was seen . wassamo looked out on the water toward their nets , and he saw that the little black spots , which were no other than the floats , dotting the lake , had disappeared . \" cousin , \" he said , \" let us visit our nets ; perhaps we are fortunate . \"",
+      "question": "where did wassamo and his parents live ?",
+      "answer": "far out in the north - east .",
+      "attribute": "setting",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-fire-plume",
+        "row_index": 1321,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1331",
+      "source": "as he opened his eyes , in a dreamy way , he saw the kettle near him . some of the fish he observed were in the bowl . the fire flickered , and made light and shadow ; but nowhere was wassamo to be seen . he waited , and waited again , in the expectation that wassamo would appear . \" perhaps , \" thought the cousin , \" he is gone out again to visit the nets . \" he looked off that way , but the canoe still lay close by the rock at the shore . he searched and found his footsteps in the ashes , and out upon the green ground a little distance , and then they were utterly lost . he was now greatly troubled in spirit , and he called aloud , \" netawis ! cousin ! cousin ! \" but there was no answer to his call . he called again in his sorrow , louder and louder , \" netawis ! netawis ! cousin ! cousin ! whither are you gone ? \" but no answer came to his voice of wailing . he started for the edge of the woods , crying as he ran , \" my cousin ! \" and \" oh , my cousin ! \" hither and thither through the forest he sped with all his fleetness of foot and quickness of spirit ; and when at last he found that no voice would answer him , he burst into tears , and sobbed aloud .",
+      "question": "what did the cousin believe wassamo was doing when he could not find him ?",
+      "answer": "gone out again to visit the nets .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-fire-plume",
+        "row_index": 1331,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1404",
+      "source": "one summer , a long , long time ago , the folk of melbustad went up to the hill pastures with their herd . but they had been there only a short time when the cattle began to grow so restless that it was impossible to keep them in order . a number of different maidens tried to manage them , but without avail ; until one came who was betrothed , and whose betrothal had but recently been celebrated . then the cattle suddenly quieted down , and were easy to handle . so the maiden remained alone in the hills with no other company than a dog . and one afternoon as she sat in the hut , it seemed to her that her sweetheart came , sat down beside her , and began to talk about their getting married at once . but she sat still and made no reply , for she noticed a strangeness about him . by and by , more and more people came in . they began to cover the table with silverware , and bring on dishes . the bridesmaids brought the bridal crown , and the ornaments , and a handsome bridal gown . they dressed her , and put the crown on her head , as was the custom in those days , and they put rings on her hands .",
+      "question": "what happened because the cows had began to grow restless ?",
+      "answer": "it was impossible to keep them in order .",
+      "attribute": "outcome resolution",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "troll-wedding",
+        "row_index": 1404,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1407",
+      "source": "one summer , a long , long time ago , the folk of melbustad went up to the hill pastures with their herd . but they had been there only a short time when the cattle began to grow so restless that it was impossible to keep them in order . a number of different maidens tried to manage them , but without avail ; until one came who was betrothed , and whose betrothal had but recently been celebrated . then the cattle suddenly quieted down , and were easy to handle . so the maiden remained alone in the hills with no other company than a dog . and one afternoon as she sat in the hut , it seemed to her that her sweetheart came , sat down beside her , and began to talk about their getting married at once . but she sat still and made no reply , for she noticed a strangeness about him . by and by , more and more people came in . they began to cover the table with silverware , and bring on dishes . the bridesmaids brought the bridal crown , and the ornaments , and a handsome bridal gown . they dressed her , and put the crown on her head , as was the custom in those days , and they put rings on her hands .",
+      "question": "what did the bridesmaids bring ?",
+      "answer": "the bridal crown , and the ornaments , and a handsome bridal gown .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "troll-wedding",
+        "row_index": 1407,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1431",
+      "source": "\" good - day , pancake , \" said the hen . \" good - day , hen glen , \" said the pancake . \" dear , good pancake , do n't roll so fast , wait a little and i will eat you up ! \" said the hen . \" mother gray and grandpa i 've left behind , and the seven squallers , too , you 'll find , and man tan , so i think i can leave you as well , hen glen ! \" said the pancake , and rolled along the road like a wheel . then it met a rooster . \" good - day , pancake , \" said the rooster . \" good - day , rooster booster , \" said the pancake . \" dear , good pancake , do n't roll so fast . wait a little and i will eat you up ! \" said the rooster . \" mother gray and grandpa i 've left behind , and the seven squallers , too , you 'll find , and man tan and hen glen , and so i think i can leave you as well , rooster booster , \" said the pancake , and rolled and rolled as fast as ever it could . and after it had rolled a long time it met a duck .",
+      "question": "who did the pancake meet after it rolled away from hen ?",
+      "answer": "a rooster .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "chronicle-of-pancake",
+        "row_index": 1431,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1432",
+      "source": "\" good - day , pancake , \" said the hen . \" good - day , hen glen , \" said the pancake . \" dear , good pancake , do n't roll so fast , wait a little and i will eat you up ! \" said the hen . \" mother gray and grandpa i 've left behind , and the seven squallers , too , you 'll find , and man tan , so i think i can leave you as well , hen glen ! \" said the pancake , and rolled along the road like a wheel . then it met a rooster . \" good - day , pancake , \" said the rooster . \" good - day , rooster booster , \" said the pancake . \" dear , good pancake , do n't roll so fast . wait a little and i will eat you up ! \" said the rooster . \" mother gray and grandpa i 've left behind , and the seven squallers , too , you 'll find , and man tan and hen glen , and so i think i can leave you as well , rooster booster , \" said the pancake , and rolled and rolled as fast as ever it could . and after it had rolled a long time it met a duck .",
+      "question": "what did the pancake do after the rooster wanted to eat it ?",
+      "answer": "rolled and rolled as fast as ever it could .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "chronicle-of-pancake",
+        "row_index": 1432,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1437",
+      "source": "about two hundred years ago there was a poor man working as a laborer on a farm in lanarkshire . he was what is known as an \" orra man . \" that is , he had no special work mapped out for him to do , but he was expected to undertake odd jobs of any kind that happened to turn up . one day his master sent him out to cast peats on a piece of moorland that lay on a certain part of the farm . now this strip of moorland ran up at one end to a curiously shaped crag , known as merlin 's crag , because , so the country folk said , that famous enchanter had once taken up his abode there . the man obeyed , and , being a willing fellow , when he arrived at the moor he set to work with all his might and main . he had lifted quite a quantity of peat from near the crag , when he was startled by the appearance of the very smallest woman that he had ever seen in his life . she was only about two feet high , and she was dressed in a green gown and red stockings , and her long yellow hair was not bound by any ribbon , but hung loosely round her shoulders .",
+      "question": "where did the poor man work ?",
+      "answer": "on a farm in lanarkshire .",
+      "attribute": "setting",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-fairies-of-merlin-crag",
+        "row_index": 1437,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1439",
+      "source": "about two hundred years ago there was a poor man working as a laborer on a farm in lanarkshire . he was what is known as an \" orra man . \" that is , he had no special work mapped out for him to do , but he was expected to undertake odd jobs of any kind that happened to turn up . one day his master sent him out to cast peats on a piece of moorland that lay on a certain part of the farm . now this strip of moorland ran up at one end to a curiously shaped crag , known as merlin 's crag , because , so the country folk said , that famous enchanter had once taken up his abode there . the man obeyed , and , being a willing fellow , when he arrived at the moor he set to work with all his might and main . he had lifted quite a quantity of peat from near the crag , when he was startled by the appearance of the very smallest woman that he had ever seen in his life . she was only about two feet high , and she was dressed in a green gown and red stockings , and her long yellow hair was not bound by any ribbon , but hung loosely round her shoulders .",
+      "question": "what did the poor man's master send him to do ?",
+      "answer": "cast peats on a piece of moorland that lay on a certain part of the farm .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-fairies-of-merlin-crag",
+        "row_index": 1439,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1500",
+      "source": "leelinau was the favorite daughter of a hunter , who lived on the lake shore near the base of the lofty highlands , called kaug wudjoo . from her earliest youth she was observed to be thoughtful and retiring . she passed much of her time in solitude , and seemed ever to prefer the companionship of her own shadow to the society of the lodge - circle . whenever she could leave her father 's lodge she would fly to remote haunts and recesses in the woods , or sit in lonely reverie upon some high promontory of rock overlooking the lake . in such places she would often , with her face turned upward , linger long in contemplation of the air , as if she were invoking her guardian spirit , and beseeching him to lighten her sadness .",
+      "question": "where did leelinau live ?",
+      "answer": "kaug wudjoo .",
+      "attribute": "setting",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "leelinau-the-lost-daughter",
+        "row_index": 1500,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1510",
+      "source": "on the eve of the day fixed for her marriage , leelinau decked herself in her best garments . she arranged her hair according to the fashion of her tribe , and put on all of her maiden ornaments in beautiful array . with a smile , she presented herself before her parents . \" i am going , \" she said , \" to meet my little lover , the chieftain of the green plume , who is waiting for me at the spirit grove . \" her face was radiant with joy , and the parents , taking what she had said as her own fanciful way of expressing acquiescence in their plans , wished her good fortune in the happy meeting .",
+      "question": "where was leelinau going to meet her lover ?",
+      "answer": "spirit grove .",
+      "attribute": "setting",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "leelinau-the-lost-daughter",
+        "row_index": 1510,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1537",
+      "source": "so the princess ran through the passage to the hen - wife 's back door and peeped out , and what should she see but a magnificent coach , drawn by six beautiful cream - coloured horses , coming along the road . greatly excited at this unusual sight , she hurried back to the kitchen , and told the hen - wife what she had seen . \" aweel , aweel , ye've seen your fortune , \" said the old woman , in a tone of satisfaction , \" for that coach - and - six is coming for thee . \" sure enough , the coach - and - six stopped at the gate of the castle , and the second princess came running down to the cottage to tell her sister to make haste , because it was waiting for her . delighted beyond measure at the wonderful luck that had come to her , she hurried home , and , saying farewell to her mother and sisters , took her seat within , and the horses galloped off immediately .",
+      "question": "what did the eldest princess do after her sister told her to make haste ?",
+      "answer": "hurried home , and , saying farewell to her mother and sisters , took her seat within , and the horses galloped off immediately .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-black-bull-of-norroway",
+        "row_index": 1537,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1562",
+      "source": "just as she was losing her hold of the great beast 's horns , however , and feeling that she must fall to the ground , he turned his massive head round a little , and , speaking in a wonderfully soft and gentle voice , said : \" eat out of my right ear , and drink out of my left ear , so wilt thou be refreshed for thy journey . \" so the princess put a trembling hand into the bull 's right ear , and drew out some bread and meat , which , in spite of her terror , she was glad to swallow ; then she put her hand into his left ear , and found there a tiny flagon of wine , and when she had drunk that , her strength returned to her in a wonderful way . long they went , and sore they rode , till , just as it seemed to the princess that they must be getting near the world 's end , they came in sight of a magnificent castle . \" that 's where we maun bide this night , \" said the black bull of norroway , \" for that is the house of one of my brothers . \"",
+      "question": "where did the youngest princess and the black bull go to rest ?",
+      "answer": "a magnificent castle .",
+      "attribute": "setting",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-black-bull-of-norroway",
+        "row_index": 1562,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1639",
+      "source": "in the old days there lived in kvam a marksman by the name of per gynt . he was continually in the mountains , where he shot bear and elk . at that time there were more forests on the fjoll , and all sorts of beasts dwelt in them . once , late in the fall , when the cattle had long since been driven down from the mountain pastures , per gynt decided to go up on the fjoll again . with the exception of three dairy - maids , all the herd - folk had already left the mountains . but when per gynt reached hovringalm , where he intended to stay over - night in a herdsman 's hut , it already was so dark that he could not see his hand before his eyes . then the dogs began to bark so violently that he felt quite uneasy . and suddenly his foot struck something . when he took hold of it , it was cold , and large and slippery . since he felt certain he had not left the path , he could not imagine what it might be ; but he sensed that all was not in order .",
+      "question": "what did per gynt do in the mountains ?",
+      "answer": "shot bear and elk .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "per-gynt",
+        "row_index": 1639,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1649",
+      "source": "\" well , whether you be crooked or straight , you will have to let me pass , \" said per gynt . he noticed that he was going around in a circle , and that the crooked one had coiled himself about the herdsman 's cottage . at these words the crooked one moved a little to one side , so that per gynt could get into the cottage . when he entered he found it as dark inside as it was out . he stumbled and felt his way along the walls . he wanted to lay aside his firelock and his hunting - bag . but while he was feeling his way about , he once more noticed the something large , and cold and slippery . \" and who are you now ? \" cried per gynt . \" o , i am the big crooked one , \" was the answer . and no matter where he took hold or where he set his foot , he could feel the coils of the crooked one laid around him . \" this is a poor place to be in , \" thought per gynt , \" for this crooked one is outside and inside . i will soon put what is wrong to rights . \" he took his firelock , went out again , and felt his way along the crooked one until he came to his head .",
+      "question": "what did per gynt do when he entered the cottage ?",
+      "answer": "stumbled and felt his way along the walls .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "per-gynt",
+        "row_index": 1649,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1675",
+      "source": "in time past -- we can not tell exactly how many , many years ago -- a poor indian was living , with his wife and children , in a beautiful part of the country . he was not only poor , but he had the misfortune to be inexpert in procuring food for his family . his children were all too young to give him assistance . although of a lowly condition and straitened in his circumstances , he was a man of kind and contented disposition . he was always thankful to the great spirit for every thing he received . he even stood in the door of his lodge to bless the birds that flew past in the summer evenings . although , if he had been of a complaining temper , he might have repined that they were not rather spread upon the table for his evening meal . the same gracious and sweet disposition was inherited by his eldest son , who had now arrived at the proper age to undertake the ceremony of the fast . this was to learn what kind of a spirit would be his guide and guardian through life . wunzh , for this was his name , had been an obedient boy from his infancy -- pensive , thoughtful , and gentle -- so that he was beloved by the whole family .",
+      "question": "where was a poor indian living with his wife and children ?",
+      "answer": "in a beautiful part of the country .",
+      "attribute": "setting",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "wunzh-the-father-of-indian-corn",
+        "row_index": 1675,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1685",
+      "source": "he then told the young man to arise , and to prepare to wrestle with him . it was only by this means that he could hope to succeed in his wishes . wunzh knew how weak he was from fasting , but the voice of the stranger was cheery , and put such a courage in his heart , that he promptly sprang up , determined to die rather than fail . brave wunzh ! if you ever accomplish any thing , it will be through the power of the resolve that spoke within you at that moment . he began the trial , and after a long - sustained struggle he was almost overpowered , when the beautiful stranger said : \" my friend , it is enough for once , i will come again to try you ; \" and smiling on him , he returned through the air in the same direction in which he had come . the next day , although he saw how sweetly the wild - flowers bloomed upon the slopes , and the birds warbled from the woodland , he longed to see the celestial visitor , and to hear his voice . to his great joy he reappeared at the same hour , toward the going down of the sun , and re - challenged wunzh to a trial of strength .",
+      "question": "what did the celestial visitor challenge wunzh to do with him ?",
+      "answer": "wrestle with him .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "wunzh-the-father-of-indian-corn",
+        "row_index": 1685,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1727",
+      "source": "when they were through she gave esben a whistle which had the power that if he blew into one end , whatever he wished scattered was scattered to all the winds , and when he blew into the other , all came together again . and if the whistle passed from his possession , it would return as soon as he wished it back . \" that is a wonderful whistle ! \" thought esben .",
+      "question": "what did the old woman give esben ?",
+      "answer": "a whistle which had the power that if he blew into one end , whatever he wished scattered was scattered to all the winds , and when he blew into the other , all came together again .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "kings-hares",
+        "row_index": 1727,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1728",
+      "source": "when they were through she gave esben a whistle which had the power that if he blew into one end , whatever he wished scattered was scattered to all the winds , and when he blew into the other , all came together again . and if the whistle passed from his possession , it would return as soon as he wished it back . \" that is a wonderful whistle ! \" thought esben .",
+      "question": "what would happen if the whistle passed from esben's possession ?",
+      "answer": "it would return as soon as he wished it back .",
+      "attribute": "outcome resolution",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "kings-hares",
+        "row_index": 1728,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1763",
+      "source": "there was once a king who had three daughters . the two eldest were very proud and quarrelsome , but the youngest was as good as they were bad . well , three princes came to court them , and two of them were exactly like the eldest ladies , and one was just as lovable as the youngest . one day they were all walking down to a lake that lay at the bottom of the lawn when they met a poor beggar . the king would n't give him anything , and the eldest princesses would n't give him anything , nor their sweethearts ; but the youngest daughter and her true love did give him something , and kind words along with it , and that was better than all .",
+      "question": "who did the king, princes, and daughters meet ?",
+      "answer": "a poor beggar .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-three-crowns",
+        "row_index": 1763,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1779",
+      "source": "well , they were n't crossing the lake while a cat would be lickin ' her ear , and the poor men could n't stir hand or foot to follow them . they saw seven inches handing the three princesses out of the boat , and letting them down by a basket into a draw - well , but king nor princes ever saw an opening before in the same place . when the last lady was out of sight , the men found the strength in their arms and legs again . round the lake they ran , and never drew rein till they came to the well and windlass ; and there was the silk rope rolled on the axle , and the nice white basket hanging to it . ' let me down , ' says the youngest prince . ' i 'll die or recover them again . ' ' no , ' says the second daughter 's sweetheart , ' it is my turn first . ' and says the other , ' i am the eldest . ' so they gave way to him , and in he got into the basket , and down they let him . first they lost sight of him , and then , after winding off a hundred perches of the silk rope , it slackened , and they stopped turning . they waited two hours , and then they went to dinner , because there was no pull made at the rope .",
+      "question": "what happened after the princes let down the eldest prince into the well ?",
+      "answer": "they lost sight of him , and then , after winding off a hundred perches of the silk rope , it slackened , and they stopped turning .",
+      "attribute": "outcome resolution",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-three-crowns",
+        "row_index": 1779,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1890",
+      "source": "hase - hime listened in an attitude of respect while her mother spoke , and promised to do all that she was told . there is a proverb which says \" as the soul is at three so it is at one hundred , \" and so hase - hime grew up as her mother had wished , a good and obedient little princess , though she was now too young to understand how great was the loss of her mother . not long after the death of his first wife , prince toyonari married again , a lady of noble birth named princess terute . very different in character , alas ! to the good and wise princess murasaki , this woman had a cruel , bad heart . she did not love her step - daughter at all , and was often very unkind to the little motherless girl , saving to herself : \" this is not my child ! this is not my child ! \"",
+      "question": "what kind of heart did princess terute have ?",
+      "answer": "cruel , bad heart .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "story-of-princess-hase",
+        "row_index": 1890,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1892",
+      "source": "but hase - hime bore every unkindness with patience . she even waited upon her step - mother kindly and obeyed her in every way and never gave any trouble , just as she had been trained by her own good mother , so that the lady terute had no cause for complaint against her . the little princess was very diligent , and her favorite studies were music and poetry . she would spend several hours practicing every day , and her father had the most proficient of masters he could find to teach her the koto ( japanese harp ) , the art of writing letters and verse . when she was twelve years of age she could play so beautifully that she and her step - mother were summoned to the palace to perform before the emperor .",
+      "question": "what were hase-hime's favorites studies ?",
+      "answer": "music and poetry .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "story-of-princess-hase",
+        "row_index": 1892,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1945",
+      "source": "on a certain afternoon the sun was falling in the west , and in the midst of the ruddy silence a solitary lodge stood on the banks of a remote lake . one sound only broke , in the least degree , the forest stillness . the low breathing of the dying inmate , who was the head of a poor family . his wife and children surrounded the buffalo robe on which he lay . of the children , two were almost grown up -- a daughter and a son . the other was a boy , and a mere child in years . all the skill of the household in their simple medicines was exhausted . they stood looking on or moved about the lodge with whispered steps , awaiting the departure of the spirit . as one of the last acts of kindness , the skin door of the lodge had been thrown back to admit the fresh air of the evening . the poor man felt a momentary return of strength , and raising himself a little , he addressed his family . \" i leave you , \" he said , \" in a world of care , in which it has required all my strength and skill to supply you food , and to protect you from the storms and cold of a harsh climate . \"",
+      "question": "what did the poor family await for ?",
+      "answer": "the departure of the spirit .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "sheem-the-forsaken-boy",
+        "row_index": 1945,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1950",
+      "source": "the sister replied : \" i do not say no , my brother , to what you desire . we are not forbidden the society of our fellow - mortals , but we are told to cherish each other , and to do nothing that shall not be agreeable to all our little household . neither pleasure nor pain ought , therefore , to separate us , especially from our younger brother , who , being but a child , and weakly withal , is entitled to a double share of our affection . if we follow our separate fancies , it will surely make us neglect him , whom we are bound by vows , both to our father and mother , to support . \" the young man received this address in silence , and still took his course as though nothing out of the ordinary way had occurred . after awhile he seemed to recover his spirits . as they lived in a large country , where there were open fields , the two brothers , at his invitation , often amused themselves in playing ball . one afternoon he chose the ground near to a beautiful lake , and they played and laughed with great spirit . the ball was seldom allowed to touch the ground .",
+      "question": "how did the two brothers often amuse themselves ?",
+      "answer": "playing ball .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "sheem-the-forsaken-boy",
+        "row_index": 1950,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1997",
+      "source": "an old man was sitting alone in his lodge by the side of a frozen stream . it was the close of winter , and his fire was almost out . he appeared very old and very desolate . his locks were white with age , and he trembled in every joint . day after day passed in solitude , and he heard nothing but the sounds of the tempest , sweeping before it the new - fallen snow . one day as his fire was just dying , a handsome young man approached and entered his dwelling . his cheeks were red with the blood of youth ; his eyes sparkled with life , and a smile played upon his lips . he walked with a light and quick step . his forehead was bound with a wreath of sweet grass , in place of the warrior 's frontlet , and he carried a bunch of flowers in his hand . \" ah ! my son , \" said the old man , \" i am happy to see you . come in . come , tell me of your adventures , and what strange lands you have been to see . let us pass the night together . i will tell you of my prowess and exploits , and what i can perform . you shall do the same , and we will amuse ourselves . \"",
+      "question": "how did the old man appear ?",
+      "answer": "very old and very desolate .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-winter-spirit-and-his-visitor",
+        "row_index": 1997,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-1998",
+      "source": "an old man was sitting alone in his lodge by the side of a frozen stream . it was the close of winter , and his fire was almost out . he appeared very old and very desolate . his locks were white with age , and he trembled in every joint . day after day passed in solitude , and he heard nothing but the sounds of the tempest , sweeping before it the new - fallen snow . one day as his fire was just dying , a handsome young man approached and entered his dwelling . his cheeks were red with the blood of youth ; his eyes sparkled with life , and a smile played upon his lips . he walked with a light and quick step . his forehead was bound with a wreath of sweet grass , in place of the warrior 's frontlet , and he carried a bunch of flowers in his hand . \" ah ! my son , \" said the old man , \" i am happy to see you . come in . come , tell me of your adventures , and what strange lands you have been to see . let us pass the night together . i will tell you of my prowess and exploits , and what i can perform . you shall do the same , and we will amuse ourselves . \"",
+      "question": "where was the old man sitting ?",
+      "answer": "in his lodge by the side of a frozen stream .",
+      "attribute": "setting",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-winter-spirit-and-his-visitor",
+        "row_index": 1998,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2021",
+      "source": "once upon a time , long , long years ago , there lived a well - to - do old couple on a homestead up in hadeland . they had a son , who was a dragoon , a big , handsome fellow . they had a pasture in the hills , and the hut was not like most of the herdsmen 's huts ; but was well and solidly built , and even had a chimney , a roof and a window . and there they spent the summer . but when they came back home in the fall , the wood - cutters and huntsmen and fishermen . and whoever else had business in the woods at that time , noticed that the mountain folk had carried on its tricks with their herd . and among the mountain folk was a maiden who was so beautiful that her like had never been seen .",
+      "question": "where did the old couple live ?",
+      "answer": "on a homestead up in hadeland .",
+      "attribute": "setting",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "troll-wife",
+        "row_index": 2021,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2029",
+      "source": "the son had often heard tell of her , and one fall , when his parents had already come home from the mountain pasture , he put on his full uniform , saddled his service horse , thrust his pistols in the holsters , and thus rode up into the hills . when he rode toward the pasture , such a fire burned in the herdsman 's hut that it lit up every road , and then he knew that the mountain folk were inside . so he tied his horse to a pine - tree , took a pistol from its holster , crept up to the hut , and peeped through the window . and there sat an old man and a woman who were quite crooked and shriveled up with age , and so unspeakably ugly that he had never seen anything like it in his life ; but with them was a maiden , and she was so surpassingly beautiful that he fell in love with her at once , and felt that he could not live without her . all had cow 's tails , and th lovely maiden , too . and he could see that they had only just arrived , for everything was in disorder . the maiden was busy washing the ugly old man , and the woman was building a fire under the great cheese - kettle on the hearth .",
+      "question": "how could the son tell the maiden had only just arrived ?",
+      "answer": "everything was in disorder .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "troll-wife",
+        "row_index": 2029,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2057",
+      "source": "after he had traveled a way , he grew very warm and thirsty . there was no water to be found , and he did not know how he was to refresh himself . then the lemons occurred to him , and he took one and bit into it . but in it sat a princess , visible up to her arms , and cried : \" water , water ! \" if she could not have some water , said she , she must die . the youth ran about everywhere like mad , looking for water ; but there was no water there , and none to be found , and when he returned she was dead . after he had gone on again a while , he grew still more thirsty , and since he found nothing with which to refresh himself , he took another lemon and bit into it . and another princess looked out , up to her shoulders , and she was even more beautiful than the first . she cried for water , and said that if she could not have some water she must die on the spot . mike by the stove ran about and looked under stones and moss ; but he found no water , so this princess also died .",
+      "question": "what happened after mike by the stove after he traveled a way ?",
+      "answer": "he grew very warm and thirsty .",
+      "attribute": "outcome resolution",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "three-lemons",
+        "row_index": 2057,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2059",
+      "source": "after he had traveled a way , he grew very warm and thirsty . there was no water to be found , and he did not know how he was to refresh himself . then the lemons occurred to him , and he took one and bit into it . but in it sat a princess , visible up to her arms , and cried : \" water , water ! \" if she could not have some water , said she , she must die . the youth ran about everywhere like mad , looking for water ; but there was no water there , and none to be found , and when he returned she was dead . after he had gone on again a while , he grew still more thirsty , and since he found nothing with which to refresh himself , he took another lemon and bit into it . and another princess looked out , up to her shoulders , and she was even more beautiful than the first . she cried for water , and said that if she could not have some water she must die on the spot . mike by the stove ran about and looked under stones and moss ; but he found no water , so this princess also died .",
+      "question": "what did mike by the stove do because he still found nothing to refresh himself with ?",
+      "answer": "took another lemon and bit into it .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "three-lemons",
+        "row_index": 2059,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2076",
+      "source": "once upon a time there was a poor widow , who found an egg under a pile of brush as she was gathering kindlings in the forest . she took it and placed it under a goose , and when the goose had hatched it , a little boy slipped out of the shell . the widow had him baptized knos , and such a lad was a rarity ; for when no more than five years old he was grown , and taller than the tallest man . and he ate in proportion , for he would swallow a whole batch of bread at a single sitting , and at last the poor widow had to go to the commissioners for the relief of the poor in order to get food for him . but the town authorities said she must apprentice the boy at a trade , for he was big enough and strong enough to earn his own keep .",
+      "question": "what was the poor widow doing when she found the egg ?",
+      "answer": "gathering kindlings in the forest .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "knos",
+        "row_index": 2076,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2079",
+      "source": "once upon a time there was a poor widow , who found an egg under a pile of brush as she was gathering kindlings in the forest . she took it and placed it under a goose , and when the goose had hatched it , a little boy slipped out of the shell . the widow had him baptized knos , and such a lad was a rarity ; for when no more than five years old he was grown , and taller than the tallest man . and he ate in proportion , for he would swallow a whole batch of bread at a single sitting , and at last the poor widow had to go to the commissioners for the relief of the poor in order to get food for him . but the town authorities said she must apprentice the boy at a trade , for he was big enough and strong enough to earn his own keep .",
+      "question": "how tall was knos when he was five years old ?",
+      "answer": "taller than the tallest man .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "knos",
+        "row_index": 2079,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2100",
+      "source": "there was once an old widow woman . who lived in a little cottage with her only daughter , who was such a bonnie lassie that everyone liked to look at her . one day the old woman took a notion into her head to bake a girdleful of cakes . so she took down her bakeboard , and went to the chest and fetched a basinful of meal . when she went to seek a jug of water to mix the meal with , she found that there was none in the house .",
+      "question": "what did the old widow woman do when she decided to bake cakes ?",
+      "answer": "took down her bakeboard , and went to the chest and fetched a basinful of meal .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-well-o-the-worlds-end",
+        "row_index": 2100,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2122",
+      "source": "\" pay no heed , the creature 's daft , \" exclaimed the old woman , running forward to stop her daughter , who was raising the axe to chop off the paddock 's head . but she was too late . down came the axe , off went the head . lo , and behold ! on the spot where the little creature had sat , stood the most handsome young prince that had ever been seen . he wore such a noble air , and was so richly dressed , that the astonished girl and her mother would have fallen on their knees before him had he not prevented them by a movement of his hand .",
+      "question": "what happened after the daughter listened to the yellow paddock's request ?",
+      "answer": "on the spot where the little creature had sat , stood the most handsome young prince that had ever been seen .",
+      "attribute": "outcome resolution",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-well-o-the-worlds-end",
+        "row_index": 2122,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2147",
+      "source": "she looked until it came near , when she perceived that it was another weendigo or giant cannibal . remembering the good conduct of the other , she had no fear of this one , and asked him to look into the lodge . he did so ; and finding after he had glared around , that there was no food at hand , he grew very wroth , and , being sorely disappointed , he took the lodge and threw it to the winds . he seemed hardly at first to notice the woman in his anger ; but presently he cast a fierce glance upon her , and seizing her by the waist , in spite of her cries and entreaties , he bore her off . to the little son , who ran to and fro lamenting , he paid no heed . at night - fall , when the hunter returned from the forest , he was amazed . his lodge was gone , and he saw his son sitting near the spot where it had stood , shedding tears . the son pointed in the direction the weendigo had taken , and as the father hurried along he found the remains of his wife strewn upon the ground . the hunter blackened his face , and vowed in his heart that he would have revenge . he built another lodge , and gathering together the bones of his wife , he placed them in the hollow part of a dry tree .",
+      "question": "what did the black cloud do to the wife ?",
+      "answer": "bore her off .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "weendigoes-and-the-bone-dwarf",
+        "row_index": 2147,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2150",
+      "source": "she looked until it came near , when she perceived that it was another weendigo or giant cannibal . remembering the good conduct of the other , she had no fear of this one , and asked him to look into the lodge . he did so ; and finding after he had glared around , that there was no food at hand , he grew very wroth , and , being sorely disappointed , he took the lodge and threw it to the winds . he seemed hardly at first to notice the woman in his anger ; but presently he cast a fierce glance upon her , and seizing her by the waist , in spite of her cries and entreaties , he bore her off . to the little son , who ran to and fro lamenting , he paid no heed . at night - fall , when the hunter returned from the forest , he was amazed . his lodge was gone , and he saw his son sitting near the spot where it had stood , shedding tears . the son pointed in the direction the weendigo had taken , and as the father hurried along he found the remains of his wife strewn upon the ground . the hunter blackened his face , and vowed in his heart that he would have revenge . he built another lodge , and gathering together the bones of his wife , he placed them in the hollow part of a dry tree .",
+      "question": "what happened after the son pointed in the direction the weendigo had taken ?",
+      "answer": "the father hurried along he found the remains of his wife strewn upon the ground .",
+      "attribute": "outcome resolution",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "weendigoes-and-the-bone-dwarf",
+        "row_index": 2150,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2194",
+      "source": "one day isaac had put out a few miles to sea to fish , when suddenly a dark fog fell . in a flash such a tremendous storm broke , that he had to throw all his fish overboard in order to lighten ship and save his life . even then it was very hard to keep the boat afloat . he steered a careful course between and across the mountainous waves , which seemed ready to swallow him from moment to moment . after he had kept on for five or six hours in this manner , he thought that he ought to touch land somewhere . but time went by , and the storm and fog grew worse and worse . then he began to realize that either he was steering out to sea , or that the wind had veered , and at last he made sure the latter was the case . he sailed on and on without a sight of land .",
+      "question": "what did isaac think would happen after steering the boat for some time ?",
+      "answer": "he ought to touch land somewhere .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "isle-of-udrost",
+        "row_index": 2194,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2202",
+      "source": "\" god be praised , now i am safe , for this is udrost ! \" said isaac to himself . directly ahead of him lay a field of barley , with ears so large and heavy that he had never seen their like . through the barley - field a narrow path led to a green turf - roofed cottage of clay , that rose above the field . on the roof of the cottage grazed a white goat with gilded horns , and an udder as large as that of the largest cow . before the door sat a little man clad in blue , puffing away at a little pipe . he had a beard so long and so large that it hung far down upon his breast .",
+      "question": "what was the man doing when isaac saw him ?",
+      "answer": "puffing away at a little pipe .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "isle-of-udrost",
+        "row_index": 2202,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2258",
+      "source": "when he had gone to bed , the princess sat looking out of the window . she again asked the giant where he kept his heart , for she was so fond of him , said she , that she wanted to know above all things . \" o , it is in the wardrobe there by the wall , \" said the giant . \" aha , \" thought the king 's son under the bed , \" that is where we will find it ! \"",
+      "question": "what was the princess doing when she asked where the giant kept his heart ?",
+      "answer": "sat looking out of the window .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "anent-giant-who-did-not-have-his-heart-about-him",
+        "row_index": 2258,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2304",
+      "source": "the dark man did n't once cast his eye towards molly , and he seemed to have no suspicion of me . when we came out i looked about me , and where do you think we were but in the dyke of the rath of cromogue . i was on the horse again , which was nothing but a big rag - weed , and i was in dread every minute i 'd fall off ; but nothing happened till i found myself in my own cabin . the king slipped five guineas into my hand as soon as i was on the ground , and thanked me , and bade me good night . i hope i 'll never see his face again . i got into bed , and could n't sleep for a long time ; and when i examined my five guineas this morning , that i left in the table drawer the last thing , i found five withered leaves of oak -- bad luck to the giver ! well , you may all think the fright , and the joy , and the grief the poor man was in when the woman finished her story . they talked and they talked , but we need n't mind what they said till friday night came , when both were standing where the mountain road crosses the one going to ross .",
+      "question": "where was the neighbor after she left the castle ?",
+      "answer": "in the dyke of the rath of cromogue .",
+      "attribute": "setting",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-fairy-nurse",
+        "row_index": 2304,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2317",
+      "source": "well , they walked on easy , and the poor hearts beating in both their breasts ; and though he could see nothing , he heard a faint jingle and trampling and rustling , and at last he got the push that she promised . he spread out his arms , and there was his wife 's waist within them , and he could see her plain ; but such a hullabulloo rose as if there was an earthquake , and he found himself surrounded by horrible - looking things , roaring at him and striving to pull his wife away . but he made the sign of the cross and bid them begone in god 's name , and held his wife as if it was iron his arms were made of . bedad , in one moment everything was as silent as the grave , and the poor woman lying in a faint in the arms of her husband and her good neighbour . well , all in good time she was minding her family and her business again ; and i 'll go bail , after the fright she got , she spent more time on her knees , and avoided fairy men all the days of the week , and particularly on sunday .",
+      "question": "what happened after the poor man held onto his wife ?",
+      "answer": "everything was as silent as the grave , and the poor woman lying in a faint in the arms of her husband and her good neighbour .",
+      "attribute": "outcome resolution",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-fairy-nurse",
+        "row_index": 2317,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2324",
+      "source": "the boy went out again and brought home the little animal , which he asked his grandfather to boil , that they might feast on it . he humored the boy in this , and he encouraged him to go on in acquiring the knowledge of hunting , until he could kill deer and the larger kinds of game ; and he became , as he grew up , an expert hunter . as they lived alone , and away from other indians , the curiosity of the stripling was excited to know what was passing in the world . one day he came to the edge of a prairie , where he saw ashes like those at his grandfather 's lodge , and lodge - poles left standing .",
+      "question": "what happened after the grandfather told the boy about the rabbit ?",
+      "answer": "the boy went out again and brought home the little animal , which he asked his grandfather to boil , that they might feast on it .",
+      "attribute": "outcome resolution",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "white-feather-and-the-six-giants",
+        "row_index": 2324,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2336",
+      "source": "long before this speech was ended the young man had turned to the quarter from which the voice proceeded , and he was astonished to behold a man ; for as yet he had never seen any human being beside his grandfather . as he looked more keenly , he saw that this man , who had the looks of great age , was wood from the breast downward , and that he appeared to be fixed in the earth . as his eye dwelt upon this strange being , the countenance by degrees faded away , and when he advanced to the spot whence it had addressed him , it was gone . he returned home ; slept ; in the midst of his slumbers , as from the hollow of the air , heard the voice ; wakened and found the promised gifts . his grandfather , when his attention was called to his awakening , was greatly surprised to find the youth with a white feather on his forehead , and to see flocks of pigeons flying out of his lodge . he then remembered the old tradition , and knowing that now the day when he should lose control of his charge had begun , he bitterly bewailed the hour . possessed of his three magic gifts , the young man departed the next morning , to seek his enemies , and to demand revenge .",
+      "question": "what happened after the young man had the three magic gifts ?",
+      "answer": "the young man departed the next morning , to seek his enemies , and to demand revenge .",
+      "attribute": "outcome resolution",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "white-feather-and-the-six-giants",
+        "row_index": 2336,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2385",
+      "source": "once upon a time there was a man who lived not very far from john of groat 's house , which , as everyone knows , is in the very north of scotland . he lived in a little cottage by the sea - shore , and made his living by catching seals and selling their fur , which is very valuable . he earned a good deal of money in this way . these creatures used to come out of the sea in large numbers , and lie on the rocks near his house basking in the sunshine . it was not difficult to creep up behind them and kill them . some of those seals were larger than others , and the country people used to call them \" roane . \" they used to whisper that they were not seals at all , but mermen and merwomen . they came from a country of their own , far down under the ocean , who assumed this strange disguise in order that they might pass through the water , and come up to breathe the air of this earth of ours .",
+      "question": "how did the man earn a good deal of money by catching seals ?",
+      "answer": "it was not difficult to creep up behind them and kill them .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-seal-catcher-and-the-merman",
+        "row_index": 2385,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2387",
+      "source": "once upon a time there was a man who lived not very far from john of groat 's house , which , as everyone knows , is in the very north of scotland . he lived in a little cottage by the sea - shore , and made his living by catching seals and selling their fur , which is very valuable . he earned a good deal of money in this way . these creatures used to come out of the sea in large numbers , and lie on the rocks near his house basking in the sunshine . it was not difficult to creep up behind them and kill them . some of those seals were larger than others , and the country people used to call them \" roane . \" they used to whisper that they were not seals at all , but mermen and merwomen . they came from a country of their own , far down under the ocean , who assumed this strange disguise in order that they might pass through the water , and come up to breathe the air of this earth of ours .",
+      "question": "what did the country people call larger seals ?",
+      "answer": "roane .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-seal-catcher-and-the-merman",
+        "row_index": 2387,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2436",
+      "source": "it chanced , long years ago , that a certain horse - dealer lived in the south of scotland , near the border . it was not very far from longtown . he was known as canonbie dick . as he went up and down the country , he almost always had a long string of horses behind him . he bought them at one fair and sold at another , generally managing to turn a good big penny by the transaction . he was a very fearless man , not easily daunted . the people who knew him used to say that if canonbie dick dare not attempt a thing , no one else need be asked to do it . one evening , he was returning from a fair at some distance from his home with a pair of horses which he had not succeeded in selling . he was riding over bowden moor , which lies to the west of the eildon hills . these hills are , as all men know , the scene of some of the most famous of thomas the rhymer 's prophecies . also , so men say , they are the sleeping - place of king arthur and his knights , who rest under the three high peaks , waiting for the mystic call that shall awake them .",
+      "question": "who was a certain horse-dealer ?",
+      "answer": "canonbie dick .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "canonbie-dick-and-thomas-of-ercildoune",
+        "row_index": 2436,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2445",
+      "source": "the wily horse - dealer thought that he saw a chance of driving a good bargain . the stranger looked a man of some consequence ; so he named a good round sum . the old man tried to bargain with him ; but when he found that he had not much chance of succeeding . no one ever did succeed in inducing canonbie dick to sell a horse for a less sum than he named for it at first . he agreed to buy the animals , and , pulling a bag of gold from the pocket of his queerly cut breeches . he began to count out the price . as he did so , canonbie dick got another shock of surprise . the gold that the stranger gave him was not the gold that was in use at the time , but was fashioned into unicorns , and bonnet - pieces , and other ancient coins . it would be of no use to the horse - dealer in his everyday transactions . but it was good , pure gold . he took it gladly . he knew that he was selling his horses at about half as much again as they were worth . \" so , \" thought he to himself , \" surely i can not be the loser in the long run . \"",
+      "question": "what did the stranger give to canonbie dick instead of gold ?",
+      "answer": "unicorns , and bonnet - pieces , and other ancient coins .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "canonbie-dick-and-thomas-of-ercildoune",
+        "row_index": 2445,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2470",
+      "source": "as a punishment for having once upon a time used that foot against a venerable medicine man , aggo dah gauda had one leg looped up to his thigh , so that he was obliged to get along by hopping . by dint of practice he had become very skillful in this exercise , and he could make leaps which seemed almost incredible . aggo had a beautiful daughter , and his chief care was to secure her from being carried off by the king of the buffalos , who was the ruler of all the herds of that kind , and had them entirely at his command to make them do as he willed . dah gauda , too , was quite an important person in his own way , for he lived in great state , having a log house of his own , and a court - yard which extended from the sill of his front - door as many hundred miles westward as he chose to measure it . although he might claim this extensive privilege of ground , he advised his daughter to keep within doors , and by no means to go far in the neighborhood , as she would otherwise be sure to be stolen away , as he was satisfied that the buffalo - king spent night and day lurking about and lying in wait to seize her .",
+      "question": "what was aggo dah gauda punished with for using that foot against a venerable medicine man ?",
+      "answer": "one leg looped up to his thigh , so that he was obliged to get along by hopping .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-man-with-his-leg-tied-up",
+        "row_index": 2470,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2473",
+      "source": "as a punishment for having once upon a time used that foot against a venerable medicine man , aggo dah gauda had one leg looped up to his thigh , so that he was obliged to get along by hopping . by dint of practice he had become very skillful in this exercise , and he could make leaps which seemed almost incredible . aggo had a beautiful daughter , and his chief care was to secure her from being carried off by the king of the buffalos , who was the ruler of all the herds of that kind , and had them entirely at his command to make them do as he willed . dah gauda , too , was quite an important person in his own way , for he lived in great state , having a log house of his own , and a court - yard which extended from the sill of his front - door as many hundred miles westward as he chose to measure it . although he might claim this extensive privilege of ground , he advised his daughter to keep within doors , and by no means to go far in the neighborhood , as she would otherwise be sure to be stolen away , as he was satisfied that the buffalo - king spent night and day lurking about and lying in wait to seize her .",
+      "question": "where did aggo live ?",
+      "answer": "in great state , having a log house of his own , and a court - yard which extended from the sill of his front - door as many hundred miles westward as he chose to measure it .",
+      "attribute": "setting",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-man-with-his-leg-tied-up",
+        "row_index": 2473,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2520",
+      "source": "in the kingdom of fife , in the days of long ago , there lived an old man and his wife . the old man was a douce , quiet body , but the old woman was lightsome and flighty , and some of the neighbours were wo nt to look at her askance , and whisper to each other that they sorely feared that she was a witch . and her husband was afraid of it , too , for she had a curious habit of disappearing in the gloaming and staying out all night ; and when she returned in the morning she looked quite white and tired , as if she had been travelling far , or working hard .",
+      "question": "how did the wife look when she returned in the morning ?",
+      "answer": "she looked quite white and tired , as if she had been travelling far , or working hard .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-witch-of-fife",
+        "row_index": 2520,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2524",
+      "source": "he used to try and watch her carefully , in order to find out where she went , or what she did , but he never managed to do so , for she always slipped out of the door when he was not looking , and before he could reach it to follow her , she had vanished utterly . at last , one day , when he could stand the uncertainty no longer , he asked her to tell him straight out whether she were a witch or no . and his blood ran cold when , without the slightest hesitation , she answered that she was ; and if he would promise not to let anyone know , the next time that she went on one of her midnight expeditions she would tell him all about it .",
+      "question": "what did the husband do when he could not stand the uncertainty any longer ?",
+      "answer": "asked her to tell him straight out whether she were a witch or no .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-witch-of-fife",
+        "row_index": 2524,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2586",
+      "source": "during the day iena had so far prospered in his sport as to kill a deer , which he now cast down at the lodge door . without pausing to take the least notice , or to give a word of welcome to the hunter , the woman ran out and began to see whether it was a large deer that he had brought . in her haste she stumbled and fell at the threshold . iena looked at her with astonishment , and thought to himself , \" i supposed i was blessed , but i find my mistake . night - hawk , \" said he , speaking aloud , \" i will leave my game with you that you may feast on it . \" he then took up his bundle and departed . after walking some time he came to another tree , on which he suspended his bundle as before , and went in search of game .",
+      "question": "what happened to the woman after she ran out to look at the deer ?",
+      "answer": "stumbled and fell at the threshold .",
+      "attribute": "outcome resolution",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-magic-bundle",
+        "row_index": 2586,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2589",
+      "source": "success again attended him , and he returned , bringing with him a deer , and he found that a lodge had sprung up as before , where he had hung his bundle . he looked in and saw a beautiful female sitting alone , with his bundle by her side . she arose and came out toward the deer which he had deposited at the door , and he immediately went into the lodge and sat by the fire , as he was weary with the day 's hunt , which had carried him far away . the woman did not return , and wondering at her delay , iena at last arose , and peeping through the door of the lodge , beheld her greedily eating all the fat of the deer . he exclaimed , \" i thought i was blessed , but i find i was mistaken . \" then addressing the woman : \" poor marten , \" said he , \" feast on the game i have brought . \" he again took up his bundle and departed ; and , as usual , hung it upon the branch of a tree , and wandered off in quest of game .",
+      "question": "what did iena catch the woman doing ?",
+      "answer": "greedily eating all the fat of the deer .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-magic-bundle",
+        "row_index": 2589,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2609",
+      "source": "but lisa took a raspberry leaf , swept the worm carefully on to the leaf and carried it out into the yard . then aina noticed that a sparrow sitting on the fence was just ready to pounce on the poor little worm , so she took up the leaf , carried it out into the wood and hid it under a raspberry bush where the greedy sparrow could not find it . yes , and what more is there to tell about a raspberry worm ? who would give three straws for such a miserable little thing ? yes , but who would not like to live in such a pretty home as it lives in ; in such a fresh fragrant dark - red cottage , far away in the quiet wood among flowers and green leaves !",
+      "question": "what did lisa do with the worm ?",
+      "answer": "took a raspberry leaf , swept the worm carefully on to the leaf and carried it out into the yard .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-raspberry-worm",
+        "row_index": 2609,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2611",
+      "source": "now it was just dinner time , so they all had a dinner of raspberries and cream . ' be careful with the sugar , otto , ' said the big sister ; but otto 's plate was like a snowdrift in winter , with just a little red under the snow . soon after dinner the big sister said : ' now we have eaten up the raspberries and we have none left to make preserve for the winter ; it would be fine if we could get two baskets full of berries , then we could clean them this evening , and to - morrow we could cook them in the big preserving pan , and then we should have raspberry jam to eat on our bread ! '",
+      "question": "what did the siblings eat for dinner ?",
+      "answer": "raspberries and cream .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-raspberry-worm",
+        "row_index": 2611,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2660",
+      "source": "once upon a time there was a man who had a cat , and she ate so very much that he did not want to keep her any longer . so he decided to tie a stone around her neck , and throw her into the river ; but before he did so she was to have something to eat just once more . the woman offered her a dish of mush and a little potful of fat . these she swallowed , and then jumped out of the window . there stood the man on the threshing - floor .",
+      "question": "what did the woman offer the cat ?",
+      "answer": "a dish of mush and a little potful of fat .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "cat-who-could-eat-so-much",
+        "row_index": 2660,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2661",
+      "source": "once upon a time there was a man who had a cat , and she ate so very much that he did not want to keep her any longer . so he decided to tie a stone around her neck , and throw her into the river ; but before he did so she was to have something to eat just once more . the woman offered her a dish of mush and a little potful of fat . these she swallowed , and then jumped out of the window . there stood the man on the threshing - floor .",
+      "question": "what was the cat to do before the man threw her into the river ?",
+      "answer": "something to eat just once more .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "cat-who-could-eat-so-much",
+        "row_index": 2661,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2691",
+      "source": "the moment his eye fell upon this jet black braid he was delighted . \" this will do , \" he said . he immediately began to run it back and forth through his hands as swiftly as he could . as he drew it forth , he tried its strength . he said again , \" this will do ; \" and winding it in a glossy coil about his shoulders , he set out a little after midnight . his object was to catch the sun before he rose . he fixed his snare firmly on a spot just where the sun must strike the land as it rose above the earth . sure enough , he caught the sun , so that it was held fast in the cord and did not rise . the animals who ruled the earth were immediately put into great commotion . they had no light . they ran to and fro , calling out to each other , and inquiring what had happened . they summoned a council to debate upon the matter , and an old dormouse , suspecting where the trouble lay , proposed that some one should be appointed to go and cut the cord . this was a bold thing to undertake , as the rays of the sun could not fail to burn whoever should venture so near to them .",
+      "question": "how did the boy catch the sun ?",
+      "answer": "fixed his snare firmly on a spot just where the sun must strike the land as it rose above the earth .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-boy-who-set-a-snare-for-the-sun",
+        "row_index": 2691,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2693",
+      "source": "the moment his eye fell upon this jet black braid he was delighted . \" this will do , \" he said . he immediately began to run it back and forth through his hands as swiftly as he could . as he drew it forth , he tried its strength . he said again , \" this will do ; \" and winding it in a glossy coil about his shoulders , he set out a little after midnight . his object was to catch the sun before he rose . he fixed his snare firmly on a spot just where the sun must strike the land as it rose above the earth . sure enough , he caught the sun , so that it was held fast in the cord and did not rise . the animals who ruled the earth were immediately put into great commotion . they had no light . they ran to and fro , calling out to each other , and inquiring what had happened . they summoned a council to debate upon the matter , and an old dormouse , suspecting where the trouble lay , proposed that some one should be appointed to go and cut the cord . this was a bold thing to undertake , as the rays of the sun could not fail to burn whoever should venture so near to them .",
+      "question": "what did the council propose someone to do ?",
+      "answer": "cut the cord .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-boy-who-set-a-snare-for-the-sun",
+        "row_index": 2693,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2721",
+      "source": "a moment more and his brothers and sisters , and their parents and friends , were transformed into birds of various plumage . some were jays , some partridges and pigeons , and others gay singing birds , who hopped about , displaying their many - colored feathers , and singing songs of cheerful note . but his wife , oweenee , still kept her earthly garb , and exhibited all the indications of extreme old age . he again cast his eyes in the direction of the clouds , and uttered the peculiar cry which had given him the victory at the rock . in a moment the youth and beauty of his wife returned ; her dingy garments assumed the shining appearance of green silk , and her staff was changed into a silver feather . the lodge again shook and trembled , for they were now passing through the uppermost clouds , and they immediately after found themselves in the evening star , the residence of osseo 's father .",
+      "question": "what did oweenee's staff change into ?",
+      "answer": "a silver feather .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "osseo-the-son-of-the-evening-star",
+        "row_index": 2721,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2723",
+      "source": "you have long been their victim , but you shall be their victim no more . the spell you were under is broken . your evil genius is overcome . i have cast him down by my superior strength , and it is this strength i now exert for your happiness . ascend , my son ; ascend into the skies , and partake of the feast i have prepared for you in the stars , and bring with you those you love . \" the food set before you is enchanted and blessed . fear not to partake of it . it is endowed with magic power to give immortality to mortals , and to change men to spirits . your bowls and kettles shall no longer be wood and earth . the one shall become silver , and the other pure gold . they shall shine like fire , and glisten like the most beautiful scarlet . every female shall also change her state and looks , and no longer be doomed to laborious tasks . she shall put on the beauty of the star - light , and become a shining bird of the air . she shall dance , and not work . she shall sing , and not cry .",
+      "question": "what did the voice say females would no longer be doomed to do ?",
+      "answer": "laborious tasks .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "osseo-the-son-of-the-evening-star",
+        "row_index": 2723,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2738",
+      "source": "after a short time , the woman heard the cry of the dog , and running home as fast as she could , she found her child gone , and the dog too . on looking around , she saw scattered upon the ground pieces of the wampum of her child 's cradle , and she knew that the dog had been faithful , and had striven his best to save her child from being carried off , as he had been , by an old woman , from a distant country , called mukakee mindemoea , or the toad - woman . the mother hurried off at full speed in pursuit , and as she flew along , she came , from time to time , to lodges inhabited by old women , who told her at what time the child - thief had passed ; they also gave her shoes that she might follow on . there was a number of these old women who seemed as if they were prophetesses , and knew what was to come long beforehand . each of them would say to her that when she had arrived at the next lodge , she must set the toes of the moccasins they had given her pointing homeward , and that they would return of themselves . the young woman was very careful to send back in this manner all the shoes she borrowed .",
+      "question": "what did the old women give the mother ?",
+      "answer": "shoes that she might follow on .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-toad-woman",
+        "row_index": 2738,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2741",
+      "source": "she thus followed in the pursuit , from valley to valley , and stream to stream , for many months and years ; when she came at length to the lodge of the last of the friendly old grandmothers , as they were called , who gave her the last instructions how to proceed . she told her that she was near the place where her son was to be found ; and she directed her to build a lodge of cedar - boughs , hard by the old toad - woman 's lodge , and to make a little bark dish , and to fill it with the juice of the wild grape . \" then , \" she said , \" your first child ( meaning the dog ) will come and find you out . \" these directions the young woman followed just as they had been given to her , and in a short time she heard her son , now grown up , going out to hunt , with his dog , calling out to him , \" peewaubik -- spirit - iron -- twee ! twee ! \"",
+      "question": "what did the friendly old grandmothers tell the mother to do with a little bark dish ?",
+      "answer": "fill it with the juice of the wild grape .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-toad-woman",
+        "row_index": 2741,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2773",
+      "source": "the girl soon grew to be a woman , but the boy increased in stature very slowly . it was a long time before he could even creep , and he was well advanced in years before he could stand alone . when he was able to walk , his sister made him a little bow and arrows , and hung around his neck a small shell , saying : \" you shall be called dais imid , or he of the little shell . \" every day he would go out with his little bow , shooting at the small birds . the first bird he killed was a tom - tit . his sister was highly pleased when he took it to her . she carefully prepared and stuffed it , and put it away for him .",
+      "question": "what was the first bird the boy killed ?",
+      "answer": "a tom - tit .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "he-of-the-little-shell",
+        "row_index": 2773,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2777",
+      "source": "as dais - imid stood looking at him -- for he had been all this time invisible -- he thought : \" i will let him have a view of me . \" presently the man , who proved to be no less a personage than the celebrated giant , manabozho , looked up and saw him . after regarding him with attention , \" who are you , little man ? \" said manabozho . \" i have a mind to kill you . \" the little hero of the shell replied : \" if you were to try to kill me you could not do it . \" with this speech of the little man , manabozho grabbed at him ; but when he thought to have had him in his hand , he was gone .",
+      "question": "who was the giant ?",
+      "answer": "manabozho .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "he-of-the-little-shell",
+        "row_index": 2777,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2800",
+      "source": "aspenclog 's mother was an aspen - tree . he slew the man who had chopped her down . then he went to the king and asked whether he could give him work . he wanted no other pay than the right to give the king three good thumps on the back when there was no more work for him to do . the king agreed to this condition , for he thought he would always have enough work for him to do . then he sent him to the forest to gather wood . but aspenclog piled up such a tremendous load that two horses could not pull the wagon . so he took two polar bears , harnessed them to the wagon , drove it home , and left the bears in the stable , where they ate up all the king 's cattle .",
+      "question": "what happened because aspenclog piled up such a tremendous load ?",
+      "answer": "two horses could not pull the wagon .",
+      "attribute": "outcome resolution",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "aspenclog",
+        "row_index": 2800,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2801",
+      "source": "aspenclog 's mother was an aspen - tree . he slew the man who had chopped her down . then he went to the king and asked whether he could give him work . he wanted no other pay than the right to give the king three good thumps on the back when there was no more work for him to do . the king agreed to this condition , for he thought he would always have enough work for him to do . then he sent him to the forest to gather wood . but aspenclog piled up such a tremendous load that two horses could not pull the wagon . so he took two polar bears , harnessed them to the wagon , drove it home , and left the bears in the stable , where they ate up all the king 's cattle .",
+      "question": "what did the king send aspenclog to do ?",
+      "answer": "gather wood .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "aspenclog",
+        "row_index": 2801,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2828",
+      "source": "so they released the wine - dealer from his block of ice , and laid him in consecrated ground . the bells tolled , and there was singing , and the pastor threw earth on the coffin , and they had a wake at which tears and laughter alternated . but when the youth had paid for the wake , he had but a few shillings left in his pocket . then he once more set out on his way . he had not gone far before a man came up behind him , and asked him whether he did not find it tiresome to wander along all alone .",
+      "question": "what happened after the youth had paid for the wake ?",
+      "answer": "he had but a few shillings left in his pocket .",
+      "attribute": "outcome resolution",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "comrade",
+        "row_index": 2828,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2829",
+      "source": "so they released the wine - dealer from his block of ice , and laid him in consecrated ground . the bells tolled , and there was singing , and the pastor threw earth on the coffin , and they had a wake at which tears and laughter alternated . but when the youth had paid for the wake , he had but a few shillings left in his pocket . then he once more set out on his way . he had not gone far before a man came up behind him , and asked him whether he did not find it tiresome to wander along all alone .",
+      "question": "what did the man do after he came up behind the youth ?",
+      "answer": "asked him whether he did not find it tiresome to wander along all alone .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "comrade",
+        "row_index": 2829,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2890",
+      "source": "in a little lodge at a beautiful spot on a lake shore , alone with his sister , lived a boy remarkable for the smallness of his stature . many large rocks were scattered around their habitation , and it had a very wild and out - of - the - way look . the boy grew no larger as he advanced in years . yet , small as he was , he had a big spirit of his own , and loved dearly to play the master in the lodge . one day in winter he told his sister to make him a ball to play with . he meant to have some sport along the shore on the clear ice . when she handed him the ball , his sister cautioned him not to go too far . he laughed at her , and ran off in high glee , throwing his ball before him and running after it at full speed . he went as fast as his ball . at last his ball flew to a great distance . he followed as fast as he could . after he had run forward for some time , he saw what seemed four dark spots upon the ice , straight before him .",
+      "question": "what was the boy remarkable for ?",
+      "answer": "the smallness of his stature .",
+      "attribute": "character",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-little-spirit-or-boy-man",
+        "row_index": 2890,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2893",
+      "source": "when he came up to the shore he was surprised to see four large , tall men , lying on the ice , spearing fish . they were four brothers , who looked exactly alike . as the little boy - man approached them , the nearest looked up . in his turn he was surprised to see such a tiny being . turning to his brothers , he said : \" tia ! look ! see what a little fellow is here . \" the three others then looked up too . seeing these four faces , as if they had been one , the little spirit or boy - man said to himself : \" four in one ! what a time they must have in choosing their hunting - shirts ! \" after they had all stared for a moment at the boy , they covered their heads , intent in searching for fish . the boy thought to himself : \" these four - faces fancy that i am to be put off without notice because i am so little . they are so broad and long . they shall find out . i may find a way to teach them that i am not to be treated so lightly . \"",
+      "question": "what did the boy see when he came up to the shore ?",
+      "answer": "four large , tall men , lying on the ice , spearing fish .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-little-spirit-or-boy-man",
+        "row_index": 2893,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    },
+    {
+      "id": "fairytaleqa-train-2935",
+      "source": "then they set forth , but the news of their coming ran swifter still . rhiannon and kieva , wife of pryderi , made haste to prepare a feast for them . and manawyddan found that pryderi had spoken the truth concerning his mother , and asked if she would take him for her husband . right gladly did she consent , and without delay they were married , and rode away to the hunt , rhiannon and manawyddan , kieva and pryderi . they would not be parted from each other by night or by day , so great was the love between them . one day , when they were returned , they were sitting out in a green place . suddenly the crash of thunder struck loudly on their ears . a wall of mist fell between them , so that they were hidden one from the other . trembling they sat till the darkness fled and the light shone again upon them . in the place where they were wo nt to see cattle , and herds , and dwellings , they beheld neither house nor beast , nor man nor smoke . neither was any one remaining in the green place save these four only .",
+      "question": "what did rhiannon and kieva, wife of pryderi do after they heard the two men were coming ?",
+      "answer": "made haste to prepare a feast for them .",
+      "attribute": "action",
+      "provenance": {
+        "dataset": "WorkInTheDark/FairytaleQA",
+        "revision": "655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf",
+        "split": "train",
+        "license": "apache-2.0",
+        "story_name": "the-escape-of-the-mouse",
+        "row_index": 2935,
+        "answer_type": "explicit",
+        "license_url": "https://github.com/uci-soe/FairytaleQAData/blob/main/LICENSE"
+      }
+    }
+  ]
+}

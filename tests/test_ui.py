@@ -121,9 +121,8 @@ def test_queue_history_and_topic_history_are_bounded(window, app, image_factory)
     assert len(window.slideshow.history) == 60
     assert window.image_history.count() == 60
     assert not window.slideshow.pending
-    window.slideshow.set_queue(images, "topic")
+    window.slideshow.set_queue(images[:60], "topic")
     assert not window.slideshow.pending  # Repeated batches do not requeue previously shown images.
-    assert window.slideshow.replay_count == 60
     assert len(window.slideshow._seen) == 60
     for index in range(50):
         window._handle_event(0, "topic", Topic(f"topic {index}", "context"))
@@ -305,12 +304,12 @@ def test_retrieval_shows_relevance_minimum_and_paused_queue_in_empty_preview(win
     window.toggle_pause()
     window._handle_event(0, "images", [image_factory()])
     assert window.canvas.current_pixmap.isNull()
-    assert window.queue_label.text() == "Paused · 1 image ready"
+    assert window.queue_label.text() == "Paused · 1 new image ready"
     assert "Images are paused" in window.image_status_label.text()
     assert "Resume images or Next" in window.canvas.empty_message
     window.next_image()
     assert not window.canvas.current_pixmap.isNull()
-    assert window.queue_label.text() == "Paused · 0 images ready"
+    assert window.queue_label.text() == "Paused · 0 new images ready"
 
 
 def test_missing_cached_files_are_visible_without_a_preview(window, tmp_path):
@@ -526,13 +525,13 @@ def test_progressive_batches_merge_pending_and_prioritize_new_images(app, image_
     controller.advance(manual=True)
     assert controller.current is third
     controller.advance(manual=True)
-    assert controller.current is first
+    assert controller.current is third
     controller.set_queue([first, second, third], "astronomy")
-    assert not controller.pending and controller.replay_count == 3
+    assert not controller.pending and len(controller.history) == 3
     controller.timer.stop()
 
 
-def test_real_timer_cycles_past_batch_and_presentation_does_not_reset_cadence(window, image_factory):
+def test_real_timer_holds_past_batch_and_presentation_does_not_reset_cadence(window, image_factory):
     first, second = image_factory(), image_factory("blue", "blue")
     observed = []
     window.slideshow.current_changed.connect(lambda image: observed.append(image))
@@ -547,10 +546,9 @@ def test_real_timer_cycles_past_batch_and_presentation_does_not_reset_cadence(wi
     assert window.slideshow.timer.timerId() == timer_id
     assert 0 < window.slideshow.timer.remainingTime() <= remaining
     QTest.qWait(2950)
-    assert len(observed) >= 4
-    assert observed[:4] == [first, second, first, second]
-    assert all(left is not right for left, right in zip(observed, observed[1:]))
-    assert "Cycling 2 current-topic images" == window.queue_label.text()
+    assert observed == [first, second]
+    assert window.slideshow.current is second
+    assert "0 new images ready" == window.queue_label.text()
 
 
 def test_new_subject_clears_playback_before_new_results_and_never_cycles_old_topic(window, image_factory):
@@ -559,7 +557,7 @@ def test_new_subject_clears_playback_before_new_results_and_never_cycles_old_top
     window._handle_event(0, "images", [first, second])
     window._handle_event(0, "topic", Topic("botany", "Plants"))
     assert window.slideshow.current is first
-    assert not window.slideshow.pending and window.slideshow.replay_count == 0
+    assert not window.slideshow.pending
     for _ in range(3):
         window.slideshow.advance()
     assert window.slideshow.current is first and len(window.slideshow.history) == 1
@@ -571,8 +569,8 @@ def test_new_subject_clears_playback_before_new_results_and_never_cycles_old_top
     assert window.slideshow.current is third and len(window.slideshow.history) == 2
 
 
-def test_cycling_pause_manual_next_and_resume_use_real_timer(window, image_factory):
-    first, second = image_factory(), image_factory("blue", "blue")
+def test_unseen_pause_manual_next_and_resume_use_real_timer(window, image_factory):
+    first, second, third = image_factory(), image_factory("blue", "blue"), image_factory("green", "green")
     window.interval.setValue(1)
     window._handle_event(0, "images", [first, second])
     window.next_image()
@@ -581,14 +579,15 @@ def test_cycling_pause_manual_next_and_resume_use_real_timer(window, image_facto
     QTest.qWait(1150)
     assert window.slideshow.current is second and len(window.slideshow.history) == 2
     window.next_image()
-    assert window.slideshow.current is first and window.slideshow.paused
+    assert window.slideshow.current is second and window.slideshow.paused
     assert not window.slideshow.timer.isActive()
+    window._handle_event(0, "images", [first, second, third])
     window.toggle_pause()
     QTest.qWait(1150)
-    assert window.slideshow.current is second and len(window.slideshow.history) == 4
+    assert window.slideshow.current is third and len(window.slideshow.history) == 3
 
 
-def test_deleted_replay_files_are_skipped_and_single_image_does_not_repeat(app, image_factory):
+def test_exhausted_batch_holds_last_frame_even_after_old_file_deleted(app, image_factory):
     controller = SlideshowController()
     first, second = image_factory(), image_factory("blue", "blue")
     controller.set_queue([first, second], "astronomy")
@@ -597,7 +596,7 @@ def test_deleted_replay_files_are_skipped_and_single_image_does_not_repeat(app, 
     for _ in range(4):
         controller.advance(manual=True)
     assert controller.current is second
-    assert len(controller.history) == 2 and controller.replay_count == 1
+    assert len(controller.history) == 2
     controller.timer.stop()
 
 
@@ -621,7 +620,7 @@ def test_new_session_discards_old_topic_playback(window, image_factory, monkeypa
     window._handle_event(0, "images", [first, second])
     window.start_monitoring()
     assert window.current_topic == "" and window.topic_label.text() == "Waiting for a topic"
-    assert not window.slideshow.pending and window.slideshow.replay_count == 0
+    assert not window.slideshow.pending
     window.slideshow.advance()
     assert window.slideshow.current is first
 
@@ -713,13 +712,13 @@ def test_decode_failed_image_is_not_replayed_and_preserves_displayed_frame(windo
     window._handle_event(0, "status", "Ready: 3 relevant images")
     assert "Could not display image" in window.image_status_label.text()
     window.next_image()
-    assert window.slideshow.current is second and window.slideshow.replay_count == 2
+    assert window.slideshow.current is second
     for _ in range(4):
         window.next_image()
-    assert recorded == [first, second, first, second, first, second]
+    assert recorded == [first, second]
     assert list(window.slideshow.history) == recorded
     assert window.image_history.count() == len(recorded)
-    assert bad not in window.slideshow._playlist.values()
+    assert bad.image_url not in window.slideshow._seen
     assert "Could not display image" not in window.image_status_label.text()
 
 
@@ -913,22 +912,22 @@ def test_significant_scene_key_clears_same_query_playback_without_summary_churn(
                                       "segments_used": 2, "segments_recorded": 2, "playback_key": 1})
     window._handle_event(0, "topic", Topic("reconnaissance satellite", "Launch narrative"))
     window._handle_event(0, "images", [first, second])
-    assert list(window.slideshow.pending) == [second] and window.slideshow.replay_count == 2
+    assert list(window.slideshow.pending) == [second]
     window._handle_event(0, "context", {"phase": "ready", "summary": "The mission begins with a launch.",
                                       "scene": "The launch vehicle takes off.", "visual_subjects": ["rocket launch"],
                                       "segments_used": 3, "segments_recorded": 3, "playback_key": 1})
-    assert list(window.slideshow.pending) == [second] and window.slideshow.replay_count == 2
+    assert list(window.slideshow.pending) == [second]
     window._handle_event(0, "context", {"phase": "ready", "summary": "The same mission continues in orbit.",
                                       "scene": "Earth viewed from orbit.", "visual_subjects": ["Earth from orbit"],
                                       "segments_used": 4, "segments_recorded": 4, "playback_key": 2})
     assert window.current_topic == "reconnaissance satellite"
     assert window.slideshow.current is first
-    assert not window.slideshow.pending and window.slideshow.replay_count == 0
+    assert not window.slideshow.pending
     window.slideshow.advance()
     assert window.slideshow.current is first
     window._handle_event(0, "images", [third])
     window._handle_event(0, "images", [third, first])
-    assert list(window.slideshow.pending) == [third, first]
+    assert list(window.slideshow.pending) == [third]
     window.next_image()
     assert window.slideshow.current is third
 
@@ -1025,7 +1024,7 @@ def test_stop_click_keeps_recorded_text_and_context_despite_late_empty_callbacks
     assert window.transcript.document().blockCount() == 2
 
 
-def test_stop_rejects_queued_new_scene_images_and_keeps_approved_cycling(window, recording_context_pipeline, image_factory):
+def test_stop_rejects_queued_new_scene_images_and_keeps_unseen_approved_pending(window, recording_context_pipeline, image_factory):
     first, second, third = image_factory(), image_factory("blue", "blue"), image_factory("green", "green")
     QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
     pipeline = recording_context_pipeline[-1]
@@ -1055,14 +1054,13 @@ def test_stop_rejects_queued_new_scene_images_and_keeps_approved_cycling(window,
     assert window.source_label.text() == established_caption
     assert window.slideshow.current is first
     assert list(window.slideshow.pending) == [second]
-    assert window.slideshow.replay_count == 2
     assert window.slideshow.timer.isActive()
     window.next_image()
     assert window.slideshow.current is second
     window.next_image()
-    assert window.slideshow.current is first
+    assert window.slideshow.current is second
     assert third not in window.slideshow.history
-    assert pipeline.displayed_images == [first, second, first]
+    assert pipeline.displayed_images == [first, second]
     QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
     resumed = recording_context_pipeline[-1]
     assert not window._context_frozen
@@ -1074,7 +1072,6 @@ def test_stop_rejects_queued_new_scene_images_and_keeps_approved_cycling(window,
                                    "found": 1, "downloaded": 1, "accepted": 1})
     assert window.current_topic == "spacecraft landing"
     assert list(window.slideshow.pending) == [third]
-    assert window.slideshow.replay_count == 1
     assert "resumed scene" in window.image_status_label.text()
     window.next_image()
     assert window.slideshow.current is third

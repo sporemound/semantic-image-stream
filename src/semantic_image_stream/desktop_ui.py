@@ -23,6 +23,7 @@ from .models import ImageCandidate, Topic, TranscriptSegment
 from .presets import AUDIOBOOK_PRESETS, apply_audiobook_preset
 from .session_store import SessionStore, SessionStoreError
 from .slideshow import ImageCanvas, SlideshowController
+from .training_paths import training_file
 
 
 STYLE = """
@@ -124,6 +125,7 @@ class MainWindow(QMainWindow):
         self.slideshow.queue_changed.connect(self._update_queue_label)
         self.canvas.load_failed.connect(self._image_failed)
         self._apply_presentation()
+        self._restore_displayed_ledger()
         if self.settings.retain_context:
             self._prepare_session_store(restore=True)
         self._load_devices()
@@ -316,11 +318,24 @@ class MainWindow(QMainWindow):
         self.input_controls.append(self.retain_context)
         self.ranking = QComboBox()
         self.ranking.addItem("Full context + image embeddings", "context_clip")
+        self.ranking.addItem("Full context + trained relevance", "learned_context")
         self.ranking.addItem("Source metadata (basic)", "metadata")
         self.ranking.addItem("Local CLIP embeddings", "clip")
         self.ranking.setCurrentIndex(self.ranking.findData(self.settings.ranking))
         self.form.addRow("Relevance scoring", self.ranking)
         self.input_controls.append(self.ranking)
+        self.use_story_examples = QCheckBox("Use local story examples")
+        self.use_story_examples.setChecked(self.settings.use_story_examples)
+        self.use_story_examples.setToolTip("Use prepared public examples to help the local interpreter follow a story. Your transcript stays on this computer.")
+        self.form.addRow(self.use_story_examples)
+        self.input_controls.append(self.use_story_examples)
+        self.training_status_label = QLabel()
+        self.training_status_label.setWordWrap(True)
+        self.training_status_label.setObjectName("status")
+        self.training_status_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.form.addRow("Training", self.training_status_label)
+        self.ranking.currentIndexChanged.connect(self._refresh_training_status)
+        self.use_story_examples.toggled.connect(self._refresh_training_status)
         self.interval = self._spin(1, 120, self.settings.slideshow_interval, 1, " s")
         self.form.addRow("Image interval", self.interval)
         self.sensitivity = self._spin(0, 1, self.settings.semantic_sensitivity, 0.05)
@@ -423,6 +438,7 @@ class MainWindow(QMainWindow):
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
         self._update_context_controls()
+        self._refresh_training_status()
 
     @staticmethod
     def _spin(minimum, maximum, value, step, suffix="") -> QDoubleSpinBox:
@@ -451,6 +467,7 @@ class MainWindow(QMainWindow):
             "semantic_provider": self.interpreter.currentData(), "context_model": self.context_model.text().strip(),
             "book_context": self.book_context.text().strip(),
             "retain_context": self.retain_context.isChecked(),
+            "use_story_examples": self.use_story_examples.isChecked(),
             "providers": [name for name, check in self.provider_boxes.items() if check.isChecked()],
             "slideshow_interval": self.interval.value(), "semantic_sensitivity": self.sensitivity.value(),
             "relevance_threshold": self.threshold.value(), "semantic_interval": self.semantic_interval.value(),
@@ -486,12 +503,54 @@ class MainWindow(QMainWindow):
             self.interpreter.setCurrentIndex(self.interpreter.findData(self.settings.semantic_provider))
             self.context_model.setText(self.settings.context_model)
             self.book_context.setText(self.settings.book_context)
+            self.use_story_examples.setChecked(self.settings.use_story_examples)
             for provider, check in self.provider_boxes.items():
                 check.setChecked(provider in self.settings.providers)
             self._apply_presentation()
+            self._refresh_training_status()
             self._device_status(f"{AUDIOBOOK_PRESETS[key].name} preset applied. Select Save settings to keep it.")
         except Exception as exc:
             self._error(f"Could not apply audiobook preset: {exc}")
+
+    def _refresh_training_status(self, *args) -> None:
+        """Inspect already prepared local files without starting models or downloads."""
+        if not hasattr(self, "training_status_label"):
+            return
+        from .learned_relevance import inspect_training_pack
+        from .story_references import inspect_story_examples
+
+        settings = deepcopy(self.settings)
+        settings.ranking = self.ranking.currentData()
+        settings.use_story_examples = self.use_story_examples.isChecked()
+        model = inspect_training_pack(settings)
+        references = inspect_story_examples(settings)
+        selected = settings.ranking == "learned_context"
+        if model["status"] == "ready":
+            mode = "" if selected else " (off)"
+            name = "Trained calibration" if model.get("chosen_head") == "cosine_only" else "Trained relevance"
+            model_text = f"{name} ready{mode} · {model.get('images', 0)} images"
+            if model.get("pairs"):
+                model_text += f" · {model['pairs']} training examples"
+            if model.get("model"):
+                model_text += f"\nModel: {model['model']}"
+        else:
+            model_text = str(model.get("message") or "Trained relevance is not installed.")
+        if references["status"] == "ready":
+            reference_text = f"Story examples ready · {references.get('examples', 0)} examples"
+        elif references["status"] == "disabled":
+            reference_text = "Story examples off · local files are kept."
+        else:
+            reference_text = str(references.get("message") or "Story examples are not installed.")
+        self.training_status_label.setText(f"{model_text}\n{reference_text}")
+        threshold = model.get("recommended_threshold")
+        recommendation = (f"Caption calibration suggestion: {threshold:.2f} (not an audiobook accuracy target).\n"
+                          if isinstance(threshold, (int, float)) and not isinstance(threshold, bool) else "")
+        self.training_status_label.setToolTip(
+            recommendation +
+            f"Trained relevance file: {training_file(settings, 'relevance-model.json')}\n"
+            f"Story examples file: {training_file(settings, 'story_examples.json')}\n"
+            "Training packs are prepared separately. Monitoring does not download them."
+        )
 
     def _update_context_controls(self, *args) -> None:
         if hasattr(self, "context_model"):
@@ -585,7 +644,7 @@ class MainWindow(QMainWindow):
         self._session_store.clear()
         self._show_session_status("Saved book cleared locally.")
 
-    def _reset_context(self, book_context: str = "") -> None:
+    def _reset_context(self, book_context: str = "", clear_seen: bool = False) -> None:
         """Start a new in-memory book without letting old workers update its panels."""
         self._session += 1
         self._session_state = None
@@ -606,7 +665,7 @@ class MainWindow(QMainWindow):
         self.topic_history.clear()
         self.current_topic = ""
         self.topic_label.setText("Waiting for a topic")
-        self.slideshow.clear()
+        self.slideshow.clear(clear_seen=clear_seen)
 
     def new_book(self) -> None:
         if self._monitoring or self._stopping:
@@ -724,6 +783,8 @@ class MainWindow(QMainWindow):
         try:
             from .engine import Pipeline, SessionState
             self.settings = self._read_settings()
+            self._refresh_training_status()
+            self._restore_displayed_ledger()
             changed_background = self.settings.book_context != self._session_book_context
             self._session_book_context = self.settings.book_context
             if self._session_state is None:
@@ -982,11 +1043,22 @@ class MainWindow(QMainWindow):
     def _update_queue_label(self, count: int) -> None:
         prefix = "Paused · " if self.slideshow.paused else ""
         noun = "image" if count == 1 else "images"
-        if count == 0 and self.slideshow.replay_count >= 2:
-            self.queue_label.setText(f"{prefix}Cycling {self.slideshow.replay_count} current-topic images")
-        else:
-            self.queue_label.setText(f"{prefix}{count} {noun} ready")
+        self.queue_label.setText(f"{prefix}{count} new {noun} ready")
         self._refresh_image_status()
+
+    def _restore_displayed_ledger(self) -> None:
+        """Read only local display fingerprints; no audio worker or model is started."""
+        from .cache import Cache
+
+        cache = None
+        try:
+            cache = Cache(self.settings)
+            self.slideshow.restore_seen(cache.seen_urls(), cache.seen_phashes())
+        except Exception as exc:
+            self._error(f"Could not restore displayed-image history: {exc}")
+        finally:
+            if cache is not None:
+                cache.close()
 
     def _image_failed(self, message: str) -> None:
         self._image_error = message
@@ -1097,7 +1169,7 @@ class MainWindow(QMainWindow):
     def clear_cache(self) -> None:
         try:
             self._maintenance_pipeline().clear_cache()
-            self.slideshow.clear()
+            self.slideshow.clear(clear_seen=False)
             self.status_label.setText("Cached images and search results deleted")
         except Exception as exc:
             self._error(f"Could not clear cache: {exc}")
@@ -1108,7 +1180,7 @@ class MainWindow(QMainWindow):
                 raise RuntimeError("Stop monitoring before deleting stored data.")
             self._clear_saved_story()
             self._maintenance_pipeline().clear_history()
-            self._reset_context(self.book_context.text().strip())
+            self._reset_context(self.book_context.text().strip(), clear_seen=True)
             self.status_label.setText("Stored session history deleted")
         except Exception as exc:
             self._error(f"Could not delete history: {exc}")

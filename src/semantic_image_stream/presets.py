@@ -46,6 +46,7 @@ def apply_audiobook_preset(settings: Settings, key: str) -> Settings:
         setattr(updated, field, getattr(preset, field))
     updated.providers = list(preset.providers)
     updated.prefetch_count = 8
-    updated.ranking = "context_clip"
+    if updated.ranking != "learned_context":
+        updated.ranking = "context_clip"
     updated.semantic_provider = "ollama"
     return updated.validate()

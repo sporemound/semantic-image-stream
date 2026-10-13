@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "semantic-image-stream"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local spoken context, authentic source images, a Windows desktop slideshow"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -37,6 +37,9 @@ semantic-image-stream = "semantic_image_stream.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+semantic_image_stream = ["data/training/*.json", "data/training/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

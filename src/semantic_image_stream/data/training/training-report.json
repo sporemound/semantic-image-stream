@@ -1,0 +1,71 @@
+{
+  "train_ready": true,
+  "seed": 20261013,
+  "epochs": 180,
+  "l2": 0.02,
+  "label_method": "paired-caption positives; wrong-source random and cosine-hard negatives",
+  "counts": {
+    "train": {
+      "images": 240,
+      "groups": 240,
+      "pairs": 720,
+      "positives": 240,
+      "negatives": 480
+    },
+    "calibration": {
+      "images": 40,
+      "groups": 40,
+      "pairs": 120,
+      "positives": 40,
+      "negatives": 80
+    },
+    "test": {
+      "images": 40,
+      "groups": 40,
+      "pairs": 120,
+      "positives": 40,
+      "negatives": 80
+    }
+  },
+  "threshold_method": "calibration F1",
+  "top1_direction": "text_to_image",
+  "calibrated_score_only": true,
+  "selection": {
+    "split": "calibration",
+    "chosen_head": "cosine_only",
+    "criterion": "Full pair head must improve calibration text-to-image top1 and pair AUC; otherwise cosine-only",
+    "candidates": {
+      "full_pair": {
+        "text_to_image_top1": 0.4,
+        "image_to_text_top1": 0.425,
+        "pair_auc": 0.8378125
+      },
+      "cosine_only": {
+        "text_to_image_top1": 0.825,
+        "image_to_text_top1": 0.775,
+        "pair_auc": 0.8678125
+      }
+    }
+  },
+  "calibration": {
+    "threshold": 0.3890187047012057,
+    "f1": 0.7333333333333334,
+    "precision": 0.66,
+    "recall": 0.825
+  },
+  "held_out": {
+    "top1": 0.65,
+    "baseline_top1": 0.65,
+    "pair_auc": 0.790625,
+    "baseline_pair_auc": 0.790625,
+    "image_to_text_top1": 0.7,
+    "baseline_image_to_text_top1": 0.7,
+    "brier": 0.17014689099550756
+  },
+  "scope": "Image-caption pairing benchmark, not audiobook scene relevance",
+  "limitations": [
+    "Museum subset does not establish generalization to contemporary photos or audiobook scenes.",
+    "Wrong-source captions are weak negatives and may still describe other images.",
+    "Only the small relevance head is trained; CLIP and Qwen weights are unchanged."
+  ]
+}

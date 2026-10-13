@@ -2,12 +2,53 @@
 from __future__ import annotations
 from contextlib import nullcontext
 from pathlib import Path
+import hashlib
+import json
 import math
+import re
 import threading
 from urllib.parse import urlsplit
 
 from .models import ImageCandidate, Topic
 from .semantic_analysis import tokens
+
+
+def _cached_encoder_snapshot(settings):
+    model_cache = Path(settings.cache_dir) / "models" / "clip"
+    root = model_cache / ("models--" + settings.clip_model.replace("/", "--")) / "snapshots"
+    snapshots = sorted(root.glob("*"), key=lambda path: path.stat().st_mtime, reverse=True)
+    return next((path for path in snapshots if all((path / name).is_file() and (path / name).stat().st_size
+                 for name in ("config.json", "tokenizer.json", "preprocessor_config.json"))
+                 and any((path / name).is_file() and (path / name).stat().st_size
+                         for name in ("model.safetensors", "pytorch_model.bin"))), None)
+
+
+def _fingerprint_snapshot(snapshot):
+    if snapshot is None:
+        raise RuntimeError("The frozen CLIP encoder is not cached locally. Install its weights before local relevance training.")
+    weight = "model.safetensors" if (snapshot / "model.safetensors").is_file() else "pytorch_model.bin"
+    files = (weight, "config.json", "preprocessor_config.json", "tokenizer.json", "tokenizer_config.json",
+             "special_tokens_map.json", "vocab.json", "merges.txt")
+    hashes = {}
+    try:
+        for name in files:
+            path = snapshot / name
+            if not path.is_file():
+                continue
+            digest = hashlib.sha256()
+            with path.open("rb") as source:
+                for chunk in iter(lambda: source.read(1_048_576), b""):
+                    digest.update(chunk)
+            hashes[name] = digest.hexdigest()
+    except OSError:
+        raise RuntimeError("Cached CLIP encoder files could not be checked locally.") from None
+    data = {"files": hashes, "use_fast": False}
+    return hashlib.sha256(json.dumps(data, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def encoder_fingerprint(settings):
+    """Identify exact cached weights/preprocessing using local reads only."""
+    return _fingerprint_snapshot(_cached_encoder_snapshot(settings))
 
 
 def is_duplicate(phash: str, previous: list[str], max_distance: int = 6) -> bool:
@@ -68,7 +109,7 @@ class ClipRanker(MetadataRanker):
         self.processor = None
         self.device = settings.clip_device
 
-    def _load(self):
+    def _load(self, local_only=False, snapshot=None):
         try:
             import torch
             from transformers import CLIPModel, CLIPProcessor
@@ -81,16 +122,14 @@ class ClipRanker(MetadataRanker):
         model_cache = str(Path(self.settings.cache_dir) / "models" / "clip")
         # Resolve an already complete snapshot before consulting the network.
         # A newer partial snapshot must not hide the installed usable weights.
-        snapshot_root = Path(model_cache) / ("models--" + self.settings.clip_model.replace("/", "--")) / "snapshots"
-        snapshots = sorted(snapshot_root.glob("*"), key=lambda path: path.stat().st_mtime, reverse=True)
-        complete = next((path for path in snapshots if all((path / name).is_file() and (path / name).stat().st_size
-                         for name in ("config.json", "tokenizer.json", "preprocessor_config.json"))
-                         and any((path / name).is_file() and (path / name).stat().st_size
-                                 for name in ("model.safetensors", "pytorch_model.bin"))), None)
+        complete = snapshot if snapshot is not None else _cached_encoder_snapshot(self.settings)
+        if local_only and complete is None:
+            raise RuntimeError("The frozen CLIP encoder is not cached locally. Install its weights before local relevance training.")
         source = str(complete) if complete else self.settings.clip_model
         options = dict(cache_dir=model_cache, trust_remote_code=False, local_files_only=complete is not None)
-        self.processor = CLIPProcessor.from_pretrained(source, **options)
-        self.model = CLIPModel.from_pretrained(source, **options).to(self.device).eval()
+        self.processor = CLIPProcessor.from_pretrained(source, use_fast=False, **options)
+        model_options = {"use_safetensors": (complete / "model.safetensors").is_file()} if complete else {}
+        self.model = CLIPModel.from_pretrained(source, **model_options, **options).to(self.device).eval()
 
     def rank(self, topic, candidates, recent):
         import torch
@@ -190,6 +229,14 @@ class ContextClipRanker(ClipRanker):
         return (None if self._history_sum is None else
                 self._history_sum / self._history_sum.norm().clamp_min(1e-8))
 
+    def _score_vectors(self, vectors, contexts):
+        denominator = sum(weight for _, weight in contexts)
+        scores = sum((vectors @ vector) * weight for vector, weight in contexts) / denominator
+        # Rescale the narrow cosine range for the existing UI score. It is
+        # never a probability; no source/title/resolution bonus changes it.
+        return [max(0.0, min(1.0, (similarity - .14) / .30))
+                for similarity in scores.detach().cpu().tolist()]
+
     def rank(self, topic, candidates, recent):
         import torch
         from PIL import Image
@@ -208,7 +255,6 @@ class ContextClipRanker(ClipRanker):
                         if vector is not None]
             if not contexts:
                 return []
-            denominator = sum(weight for _, weight in contexts)
             for offset in range(0, len(candidates), 4):
                 batch = candidates[offset:offset + 4]
                 images = []
@@ -221,20 +267,104 @@ class ContextClipRanker(ClipRanker):
                     with torch.inference_mode():
                         vectors = self.model.get_image_features(**inputs).float()
                         vectors = vectors / vectors.norm(dim=-1, keepdim=True).clamp_min(1e-8)
-                        scores = sum((vectors @ vector) * weight for vector, weight in contexts) / denominator
-                    for candidate, similarity in zip(batch, scores.detach().cpu().tolist()):
-                        # Rescale the narrow CLIP cosine range for the 0..1 UI.
-                        # This is a relevance score, never a probability. No
-                        # title, resolution, or source bonus can rescue pixels
-                        # which do not match the recorded scene and story.
-                        candidate.score = max(0.0, min(1.0, (similarity - .14) / .30))
+                        scores = self._score_vectors(vectors, contexts)
+                    for candidate, score in zip(batch, scores):
+                        candidate.score = score
                 finally:
                     for image in images:
                         image.close()
         return sorted(candidates, key=lambda candidate: candidate.score, reverse=True)
 
 
+class LearnedContextRanker(ContextClipRanker):
+    """Checked local pair head, sharing complete story/scene embeddings."""
+    name = "learned_context"
+
+    def __init__(self, settings, gpu_lock=None):
+        super().__init__(settings, gpu_lock)
+        self._adapter = None
+
+    def _load_adapter(self):
+        from .learned_relevance import load_adapter
+        from .training_paths import training_file
+        self._adapter = load_adapter(training_file(self.settings, "relevance-model.json"), self.settings.clip_model)
+
+    def _load(self):
+        from .learned_relevance import AdapterError
+
+        self._load_adapter()
+        expected = self._adapter.artifact.get("metadata", {}).get("encoder_fingerprint")
+        if not isinstance(expected, str) or not re.fullmatch(r"[a-f0-9]{64}", expected):
+            raise AdapterError("The trained relevance model has no exact encoder fingerprint. Train it again with the cached encoder.")
+        snapshot = _cached_encoder_snapshot(self.settings)
+        if expected != _fingerprint_snapshot(snapshot):
+            raise AdapterError("The trained relevance model uses different CLIP weights or preprocessing. Train it again with this cached encoder.")
+        super()._load(local_only=True, snapshot=snapshot)
+
+    def _score_vectors(self, vectors, contexts):
+        from .learned_relevance import pair_features
+
+        if self._adapter is None:
+            self._load_adapter()
+        images = vectors.detach().cpu().numpy()
+        denominator = sum(weight for _, weight in contexts)
+        if self._adapter.artifact["report"]["selection"]["chosen_head"] == "cosine_only":
+            # Averaging nonlinear per-context probabilities can change the
+            # original scene/story ordering. Calibrate its weighted raw cosine
+            # once so the selected conservative head keeps that ordering.
+            raw = sum(pair_features(images, vector.detach().cpu().numpy())[:, -1] * weight
+                      for vector, weight in contexts) / denominator
+            return self._adapter.predict_cosines(raw).tolist()
+        scores = sum(self._adapter.predict(images, vector.detach().cpu().numpy()) * weight
+                     for vector, weight in contexts) / denominator
+        return scores.tolist()
+
+
+def embed_pairs(settings, image_paths, texts, gpu_lock=None):
+    """Extract training vectors from the already cached encoder, without downloads."""
+    import numpy as np
+    import torch
+    from PIL import Image
+    from .learned_relevance import AdapterError, EMBEDDING_DIM, MAX_SAMPLES
+
+    paths, captions = list(image_paths), list(texts)
+    if (not paths or len(paths) != len(captions) or len(paths) > MAX_SAMPLES
+            or any(not isinstance(text, str) or not text.strip() for text in captions)):
+        raise AdapterError("Provide a bounded set of paired training images and nonempty captions.")
+    ranker = ContextClipRanker(settings, gpu_lock)
+    image_vectors, text_vectors = [], []
+    access = ranker.gpu_lock if settings.clip_device == "cuda" else nullcontext()
+    with access:
+        ranker._load(local_only=True)
+        for offset in range(0, len(paths), 4):
+            images = []
+            try:
+                for path in paths[offset:offset + 4]:
+                    with Image.open(path) as source:
+                        images.append(source.convert("RGB"))
+                inputs = ranker.processor(images=images, return_tensors="pt")
+                inputs = {key: value.to(ranker.device) for key, value in inputs.items()}
+                with torch.inference_mode():
+                    vectors = ranker.model.get_image_features(**inputs).float()
+                    vectors = vectors / vectors.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+                image_vectors.extend(vectors.detach().cpu().numpy())
+            finally:
+                for image in images:
+                    image.close()
+        for text in captions:
+            vector = ranker._text_vector((text,))
+            if vector is None:
+                raise AdapterError("A training caption produced no CLIP text features.")
+            text_vectors.append(vector.detach().cpu().numpy())
+    result = np.asarray(image_vectors, dtype=np.float32), np.asarray(text_vectors, dtype=np.float32)
+    if any(matrix.shape != (len(paths), EMBEDDING_DIM) for matrix in result):
+        raise AdapterError("The selected cached encoder has incompatible training dimensions.")
+    return result
+
+
 def build_ranker(settings, gpu_lock=None):
+    if settings.ranking == "learned_context":
+        return LearnedContextRanker(settings, gpu_lock)
     if settings.ranking == "context_clip":
         return ContextClipRanker(settings, gpu_lock)
     return ClipRanker(settings, gpu_lock) if settings.ranking == "clip" else MetadataRanker()

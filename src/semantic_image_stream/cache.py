@@ -21,7 +21,16 @@ class Cache:
             CREATE TABLE IF NOT EXISTS queries (key TEXT PRIMARY KEY, ts REAL, payload TEXT);
             CREATE TABLE IF NOT EXISTS images (url TEXT PRIMARY KEY, ts REAL, payload TEXT);
             CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY, ts REAL, payload TEXT);
+            CREATE TABLE IF NOT EXISTS seen_images (url TEXT PRIMARY KEY, phash TEXT NOT NULL);
         """)
+        # Migrate the older display history once. The durable fingerprint ledger
+        # is independent of the bounded visible history and cache eviction.
+        for (payload,) in self.db.execute("SELECT payload FROM history"):
+            try:
+                image = ImageCandidate.from_dict(json.loads(payload))
+                self.db.execute("INSERT OR IGNORE INTO seen_images VALUES (?,?)", (image.image_url, image.phash))
+            except (ValueError, TypeError, KeyError):
+                continue
         self.db.commit()
 
     def get_query(self, key: str) -> list[ImageCandidate] | None:
@@ -54,11 +63,21 @@ class Cache:
             self.db.execute("DELETE FROM images WHERE url NOT IN (SELECT url FROM images ORDER BY ts DESC LIMIT 2000)")
 
     def record(self, image: ImageCandidate) -> None:
-        if self.settings.history_enabled:
-            with self.lock, self.db:
+        with self.lock, self.db:
+            self.db.execute("INSERT OR REPLACE INTO seen_images VALUES (?,?)", (image.image_url, image.phash))
+            if self.settings.history_enabled:
                 self.db.execute("INSERT INTO history(ts,payload) VALUES (?,?)", (time.time(), json.dumps(image.to_dict())))
                 self.db.execute("DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY id DESC LIMIT ?)",
                                 (self.settings.history_limit,))
+
+    def seen_urls(self) -> set[str]:
+        with self.lock:
+            return {row[0] for row in self.db.execute("SELECT url FROM seen_images") if row[0]}
+
+    def seen_phashes(self) -> set[str]:
+        with self.lock:
+            return {row[0] for row in self.db.execute("SELECT DISTINCT phash FROM seen_images")
+                    if re.fullmatch(r"[a-f0-9]{16}", row[0] or "")}
 
     def history(self) -> list[ImageCandidate]:
         with self.lock:
@@ -69,14 +88,15 @@ class Cache:
     def clear_history(self) -> None:
         with self.lock, self.db:
             self.db.execute("DELETE FROM history")
+            self.db.execute("DELETE FROM seen_images")
             # VACUUM removes deleted rows from the main database as well.
         with self.lock:
             self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             self.db.execute("VACUUM")
 
     def clear(self) -> None:
-        self.clear_history()
         with self.lock, self.db:
+            self.db.execute("DELETE FROM history")
             self.db.execute("DELETE FROM queries")
             self.db.execute("DELETE FROM images")
         # Only owned regular image files in this exact directory are removed.

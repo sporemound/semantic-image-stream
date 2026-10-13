@@ -24,6 +24,8 @@ context_model = "qwen2.5:7b" # complete cached local GGUF model; no cloud models
 book_context = "" # optional title/setting/background; edits re-read retained text
 retain_context = true # automatically save and restore the last local story
 session_dir = "" # blank = %LOCALAPPDATA%/SemanticImageStream/sessions on Windows
+training_dir = "" # blank = local training folder, then bundled public starter pack
+use_story_examples = true # local human reasoning examples; never facts about your book
 context_cpu_threads = 6
 context_timeout = 180.0
 providers = ["wikimedia"] # priority order; duckduckgo, openverse, archive also available
@@ -36,7 +38,7 @@ max_aspect_ratio = 3.0
 max_download_bytes = 15000000
 max_image_pixels = 40000000
 download_timeout = 12.0
-ranking = "context_clip" # needs [clip] extra; metadata/clip are basic/query-only modes
+ranking = "context_clip" # learned_context uses bundled trained calibration; [clip] needed
 clip_model = "openai/clip-vit-base-patch32"
 clip_device = "cpu"
 transition = "crossfade" # crossfade, dissolve, zoom, cut

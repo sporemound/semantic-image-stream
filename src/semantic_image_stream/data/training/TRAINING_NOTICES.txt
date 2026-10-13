@@ -1,0 +1,36 @@
+Semantic Image Stream public starter training pack, 2026-10-13
+
+APPLICATION CODE: MIT; see the application LICENSE.
+TRAINED RELEVANCE CALIBRATION: shared under CC BY 4.0 with attribution to
+Semantic Image Stream contributors and Mitsua (source dataset compiler).
+https://creativecommons.org/licenses/by/4.0/
+
+IMAGE TRAINING SOURCE: Mitsua/art-museums-pd-440k
+https://huggingface.co/datasets/Mitsua/art-museums-pd-440k
+Revision fba945da78b36262eb9272067197cc28d06cffbf, original train split.
+320 deduplicated images: 240 fitting, 40 calibration, 40 untouched test.
+Original museum images/metadata are identified as CC0; compiled English
+captions and dataset are CC BY 4.0. The accompanying training-manifest.json
+retains each title, creator, source URL, caption, license, row index and hashes.
+The sampled pixels are not redistributed in this package. The model contains
+learned scalar calibration parameters; original CLIP weights are not included.
+Changes: bounded sampling, raster conversion, pHash deduplication, source-group
+splits, caption-pair positives and weak wrong-source negatives, local fitting.
+This is a caption-pair benchmark, not evidence of better audiobook matching.
+
+STORY EXAMPLES: FairytaleQAData / UCI School of Education contributors.
+https://github.com/uci-soe/FairytaleQAData
+Endorsed Hugging Face copy: WorkInTheDark/FairytaleQA
+https://huggingface.co/datasets/WorkInTheDark/FairytaleQA
+Revision 655b20b370f8ec6ef0cae5ac08f1c27ec6e72aaf, train.csv only.
+128 explicit, literally supported human question-answer examples, selected
+from character/setting/action/outcome annotations. Apache License 2.0 for
+the upstream dataset; full license accompanies this file.
+Original fairy-tale text comes from the public-domain Gutenberg collection;
+story rights and applicable source conditions remain separate. Source story
+names and annotation row numbers are retained in every example.
+https://www.gutenberg.org/policy/permission.html
+Changes: train-only subset, maximum two examples per source story, literal
+section/answer validation, bounded local retrieval and prompt excerpts.
+These illustrate reasoning and cannot establish facts about a user's book.
+No Qwen fine-tuning was performed. No private narration was used or uploaded.
