@@ -1,0 +1,46 @@
+{
+  "description": "Original narrated test recordings, generated locally with Windows System.Speech. These are synthetic speech fixtures, not human podcasts and never a simulated application runtime.",
+  "license": "Original narration is MIT licensed with project code. Windows installed voice is used only to create test speech recordings.",
+  "recordings": [
+    {
+      "file": "astronomy.wav",
+      "domain": "astronomy and cosmology",
+      "text": "Astronomy explores how stars and galaxies change over billions of years. A black hole forms when a massive star collapses. Its event horizon marks the boundary where light cannot escape. General relativity explains how gravity bends space around the black hole. Astronomers compare telescope observations with mathematical models to test these ideas.",
+      "expected_topics": ["black hole", "event horizon", "general relativity", "astronomy", "galaxies"],
+      "keyword_groups": [["astronomy", "astronomers"], ["black hole", "black holes"], ["event horizon"], ["general relativity"]]
+    },
+    {
+      "file": "history.wav",
+      "domain": "historical documentary: French Revolution",
+      "text": "The French Revolution transformed the politics of France. Crowds in Paris stormed the Bastille, challenging royal authority. The National Assembly debated the rights of citizens and limits on the king. Historians study paintings, printed declarations, and surviving buildings to understand how these events changed society. An archival illustration can reveal details that a modern stock photograph cannot.",
+      "expected_topics": ["French Revolution", "Bastille", "National Assembly", "Paris"],
+      "keyword_groups": [["french revolution"], ["bastille"], ["national assembly"], ["paris"]]
+    },
+    {
+      "file": "botany.wav",
+      "domain": "botanical lecture: photosynthesis and mycorrhiza",
+      "text": "In botany, photosynthesis allows green plants to convert sunlight into chemical energy. Chloroplasts inside leaf cells capture light and help produce sugars. Below the soil, mycorrhizal fungi form partnerships with plant roots. The fungi supply water and minerals, while the plant shares sugars. Scientific diagrams can show the relationship between leaves, roots, and fungal networks.",
+      "expected_topics": ["photosynthesis", "chloroplasts", "mycorrhizal", "plant roots", "botany"],
+      "keyword_groups": [["botany"], ["photosynthesis"], ["chloroplast", "chloroplasts"], ["mycorrhizal", "mycorrhiza"], ["plant roots"]]
+    },
+    {
+      "file": "scientific_interview.wav",
+      "domain": "scientific interview: quantum experiments",
+      "text": "The interviewer asks how quantum experiments reveal the behavior of tiny particles. The physicist describes a double slit experiment, where electrons produce an interference pattern. Measuring which slit an electron passes through changes the observed pattern. Carefully controlled laboratory equipment lets researchers compare measurements with quantum predictions. A diagram of the apparatus is more useful here than a decorative photograph.",
+      "expected_topics": ["quantum", "double slit", "interference pattern", "electrons"],
+      "keyword_groups": [["quantum"], ["double slit", "double-slit"], ["interference pattern"], ["electrons", "electron"]]
+    },
+    {
+      "file": "rapid_topic_shifts.wav",
+      "domain": "rapid topic shift: astronomy to botany",
+      "parts": [
+        "Our first subject is astronomy. A black hole can form after a massive star collapses. Its event horizon is the boundary beyond which light cannot escape. General relativity describes the gravity around a black hole. Telescope observations help astronomers examine the surrounding hot gas and compare it with theoretical predictions.",
+        "Now we change subjects completely and discuss botany. Photosynthesis takes place in chloroplasts inside green leaf cells. Plants use sunlight to make sugars. Mycorrhizal fungi form partnerships with plant roots and supply minerals from the soil. Diagrams of leaves, roots, and fungal networks help explain how plants obtain energy and nutrients."
+      ],
+      "break_seconds": 1,
+      "expected_topics": ["black hole", "event horizon", "photosynthesis", "chloroplasts", "mycorrhizal", "plant roots"],
+      "keyword_groups": [["black hole", "black holes"], ["event horizon"], ["photosynthesis"], ["chloroplast", "chloroplasts"], ["mycorrhizal", "mycorrhiza"]],
+      "expected_transition": {"from_any": ["black hole", "astronomy", "event horizon"], "to_any": ["photosynthesis", "chloroplast", "mycorrhizal", "plant roots", "botany"]}
+    }
+  ]
+}

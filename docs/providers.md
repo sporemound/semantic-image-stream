@@ -1,0 +1,13 @@
+# Image providers and limitations
+
+Provider order in `providers = [...]` is the configured priority. Searches run concurrently; results are combined, validated, deduplicated and relevance-ranked. Results and images are cached locally. HTTP errors, authentication errors, access restrictions and rate limits are reported rather than bypassed. Search queries are compact; transcripts and audio are not transmitted.
+
+| Provider | Access | Attribution / caveats |
+| --- | --- | --- |
+| Wikimedia Commons (default) | Anonymous [MediaWiki Action API](https://www.mediawiki.org/wiki/API:Imageinfo) generator search in File namespace with imageinfo/extmetadata, max 20 results per call | Artist, description-page URL, license and license URL where present. Downloads bounded 1600-pixel thumbnails. Commons includes photographs, diagrams, illustrations and some generated content. Explicit generated-image metadata is excluded; remaining imagery is marked unverified. |
+| DuckDuckGo Images (optional) | Maintained [`ddgs`](https://github.com/deedy5/ddgs) adapter with explicit `backend="duckduckgo"`; install `[search]` | Broad discovery, no guaranteed API uptime or licensing metadata. Unknown creator/license is labelled honestly. No direct HTML scraper, CAPTCHA bypass, proxy rotation or credential handling is implemented. DDGS may be rate-limited or incompatible with service changes. |
+| Openverse | Anonymous [Openverse API](https://api.openverse.org/v1/) image endpoint | Creator, source page and Creative Commons/public-domain license metadata. Anonymous rate limits apply; no key is required. Original URLs can be broken or use HTTP and are then rejected for download. |
+| Internet Archive | Documented [item search](https://archive.org/services/docs/api/item-search-apis.html) and [item metadata](https://archive.org/services/docs/api/md-read.html) APIs | Only image-media items and original image files, excluding item thumbnails; at most ten item-metadata lookups with three concurrent requests. Item-level creator/rights may be incomplete or may not apply uniformly to every file. |
+| Google Images | Not implemented | No free, universal documented Google image-search method is bundled. A future compliant adapter would need explicit API access and may incur charges; it is not a core requirement. |
+
+Source pages are always preserved. A search-provider name alone does not establish credibility or authenticity. Metadata can be incomplete or wrong, and AI-generated sources without clear labels cannot be reliably identified. The app never calls its retrieved image verified archival evidence. Users should inspect sources when factual provenance matters and check reuse terms before redistribution.
