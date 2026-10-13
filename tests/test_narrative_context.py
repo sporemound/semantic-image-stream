@@ -538,3 +538,53 @@ def test_single_object_query_includes_model_grounded_environment(monkeypatch):
     topic = analyzer.analyze([TranscriptSegment(0, 8, "A door was standing in the flat landscape.")])
     assert topic.query == "door flat landscape"
     assert topic.queries == ("door flat landscape", "door", "flat landscape")
+
+
+def test_length_limited_structured_reply_retries_same_context_with_bounded_larger_budget(monkeypatch):
+    status = []
+    analyzer = narrative.LocalNarrativeAnalyzer(settings(), on_status=status.append)
+
+    def generate(prompt, call):
+        if call == 1:
+            return json.dumps({"response": '{"summary":"Incomplete', "done": True,
+                               "done_reason": "length", "prompt_eval_count": 1200}).encode() + b"\n"
+        return stream_state(model_state(prompt["new_transcript"]), done_reason="stop")
+
+    prompts, requests = install_local_model(monkeypatch, analyzer, generate)
+    recording = segments(20)
+    topic = analyzer.analyze(recording)
+    assert topic.context_used_segments == 20
+    assert topic.transcript == tuple(segment.text for segment in recording)
+    assert prompts[0]["new_transcript"] == prompts[1]["new_transcript"]
+    budgets = [json.loads(request.content)["options"]["num_predict"] for request in requests
+               if request.url.path == "/api/generate"]
+    assert budgets == [384, 768]
+    assert any("larger bounded budget" in message for message in status)
+
+
+def test_response_budget_cap_preserves_pending_cursor_on_repeated_truncation(monkeypatch):
+    analyzer = narrative.LocalNarrativeAnalyzer(settings())
+
+    def generate(prompt, call):
+        return json.dumps({"response": '{"summary":"Incomplete', "done": True,
+                           "done_reason": "length"}).encode() + b"\n"
+
+    prompts, requests = install_local_model(monkeypatch, analyzer, generate)
+    with pytest.raises(narrative.NarrativeOutputLimit, match="response limit"):
+        analyzer.analyze(segments(20))
+    assert analyzer.context_used_segments == 0
+    assert analyzer.summary == ""
+    assert len(prompts) == 2
+    assert analyzer._output_tokens == narrative.MAX_OUTPUT_TOKENS
+    assert all(json.loads(request.content)["options"]["num_predict"] <= narrative.MAX_OUTPUT_TOKENS
+               for request in requests if request.url.path == "/api/generate")
+
+
+def test_complete_json_at_generation_limit_is_still_a_valid_response(monkeypatch):
+    analyzer = narrative.LocalNarrativeAnalyzer(settings())
+    prompts, _ = install_local_model(monkeypatch, analyzer, lambda prompt, call: stream_state(
+        model_state(prompt["new_transcript"]), done_reason="length"))
+    topic = analyzer.analyze(segments(1))
+    assert topic.context_used_segments == 1
+    assert len(prompts) == 1
+    assert analyzer._output_tokens == 384

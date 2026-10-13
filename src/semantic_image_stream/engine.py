@@ -103,6 +103,10 @@ class Pipeline:
         self._generation = 0
         self._last_search = 0.0
         self._latest_topic = self.session_state.topic
+        self._approved_images = {}
+        self._approved_scope = None
+        self._approved_generation = None
+        self._last_fill_signature = None
 
     @property
     def running(self):
@@ -167,6 +171,7 @@ class Pipeline:
         if previous_segments:
             self.emit("transcript", previous_segments)
         if self._latest_topic:
+            self._last_fill_signature = self._fill_signature(self._latest_topic)
             self._emit_context("ready", "Retained story context is ready.")
             self.emit("topic", self._latest_topic)
             if self._latest_topic.query:
@@ -258,7 +263,7 @@ class Pipeline:
             if (window and count != last_count
                     and (count != failed_count or time.monotonic() >= retry_at)):
                 self._emit_context("updating", "Updating local story understanding from all recorded text.")
-                topic, changed = None, False
+                topic, changed, refill = None, False, False
                 try:
                     if analyzer is None:
                         analyzer = self._session_analyzer()
@@ -284,16 +289,22 @@ class Pipeline:
                         # ranking, even if its compact search query is stable.
                         self._latest_topic = topic
                         self.session_state.topic = topic
+                        self._sync_image_pool(topic)
+                        signature = self._fill_signature(topic)
+                        refill = (bool(topic.query) and len(self._approved_images) < self.settings.prefetch_count
+                                  and signature != self._last_fill_signature)
                         message = ("Local story understanding updated." if topic.query else
                                    "No grounded visual subject in this passage yet.")
                         self._emit_context("ready", message, playback_changed=playback_changed)
                     else:
                         changed = False
-                if topic and failed_count == -1 and changed:
+                if topic and failed_count == -1 and (changed or refill):
                     self._latest_topic = topic
                     self._generation += 1
                     gate.accept(topic)
-                    self.emit("topic", topic)
+                    self._last_fill_signature = self._fill_signature(topic)
+                    if changed:
+                        self.emit("topic", topic)
                     while not self.topic_queue.empty():
                         self.topic_queue.get_nowait()
                     if topic.query:
@@ -343,7 +354,8 @@ class Pipeline:
         detail = str(error) if isinstance(error, NarrativeContextError) else f"Local story understanding failed ({type(error).__name__})."
         self._emit_context("error", f"{detail} Speech recording continues; context will retry.")
 
-    def _update_playback_scope(self, topic):
+    @staticmethod
+    def _visual_scope(topic):
         subjects = frozenset(tokens(" ".join(topic.visual_subjects or (topic.query,))))
         scene = frozenset(tokens(topic.scene))
         # Content-token distance drops function words, including negation.
@@ -356,20 +368,41 @@ class Pipeline:
             ("open", r"\b(?:open|opens|opened|opening)\b"),
             ("closed", r"\b(?:closed|closes|closing|shut)\b"),
         ) if re.search(pattern, visual))
-        scope = (bool(topic.query), subjects, scene, polarity)
-        previous = self.session_state.playback_scope
+        return bool(topic.query), subjects, scene, polarity
 
+    @staticmethod
+    def _scope_changed(previous, current):
         def distance(first, second):
             return 1 - len(first & second) / max(1, len(first | second))
 
-        changed = (previous is None or previous[0] != scope[0]
-                   or (scope[0] and (distance(previous[1], subjects) >= 0.5
-                                     or (scene and previous[2] and distance(previous[2], scene) >= 0.6)
-                                     or (previous[3] if len(previous) > 3 else frozenset()) != polarity)))
+        return (previous is None or previous[0] != current[0]
+                or (current[0] and (distance(previous[1], current[1]) >= 0.5
+                                   or (current[2] and previous[2] and distance(previous[2], current[2]) >= 0.6)
+                                   or (previous[3] if len(previous) > 3 else frozenset()) != current[3])))
+
+    def _update_playback_scope(self, topic):
+        scope = self._visual_scope(topic)
+        changed = self._scope_changed(self.session_state.playback_scope, scope)
         if changed:
             self.session_state.playback_scope = scope
             self.session_state.playback_generation += 1
         return changed
+
+    @staticmethod
+    def _fill_signature(topic):
+        # Counts, raw-text appends and summary paraphrases alone do not justify
+        # another source search. Grounded alternatives and visual content do.
+        queries = tuple(dict.fromkeys(sanitize_query(query).casefold()
+                                      for query in (topic.query, *topic.queries) if sanitize_query(query)))
+        return queries, frozenset(tokens(" ".join(topic.visual_subjects))), frozenset(tokens(topic.scene))
+
+    def _sync_image_pool(self, topic):
+        scope = self._visual_scope(topic)
+        generation = self.session_state.playback_generation
+        if self._approved_generation != generation or self._scope_changed(self._approved_scope, scope):
+            self._approved_images.clear()
+            self._approved_scope, self._approved_generation = scope, generation
+        self._approved_images = {url: image for url, image in self._approved_images.items() if image.path.is_file()}
 
     def _emit_context(self, phase, message, playback_changed=False):
         with self._segments_lock:
@@ -399,23 +432,28 @@ class Pipeline:
             while not self.topic_queue.empty():
                 generation, topic = self.topic_queue.get_nowait()
             self._last_search = time.monotonic()
+            self._sync_image_pool(self._latest_topic or topic)
+            if len(self._approved_images) >= self.settings.prefetch_count:
+                continue
             query = sanitize_query(topic.query)
             query_basis = topic
             is_fallback = False
             tried = {query.casefold()}
             remaining = 2
             rejected_urls = {}
+            attempt_failures = Counter()
+            attempt_stats = {"found": 0, "downloaded": 0, "best_score": None}
             published = False
             ranking_failed = False
             while not self.stop_event.is_set():
                 candidates = await self._query_candidates(query, providers, cache)
                 published, ranking_failed = await self._evaluate_candidates(
                     topic, candidates, query_basis if is_fallback else None,
-                    query if is_fallback else None, downloader, ranker, cache, rejected_urls)
+                    query if is_fallback else None, downloader, ranker, cache, rejected_urls, attempt_failures, attempt_stats)
                 # Raw source hits are not usable matches. Try the remaining
                 # subjects only after validation/ranking exhausts this batch.
                 # A failed local ranker instead retains its explicit diagnostic.
-                if published or ranking_failed or not remaining:
+                if ranking_failed or len(self._approved_images) >= self.settings.prefetch_count or not remaining:
                     break
                 basis = self._latest_topic or topic
                 if not basis.query:
@@ -430,20 +468,40 @@ class Pipeline:
                 tried.add(query.casefold())
                 remaining -= 1
                 self.emit("retrieval", {"phase": "searching", "found": 0, "downloaded": 0,
-                                        "rejected": 0, "accepted": 0,
+                                        "rejected": 0, "accepted": len(self._approved_images),
                                         "threshold": self.settings.relevance_threshold,
                                         "best_score": None, "failures": {},
-                                        "message": "No usable matches yet; trying a shorter query from the current spoken context."})
-            if not published:
+                                        "message": (f"{len(self._approved_images)}/{self.settings.prefetch_count} relevant images ready; "
+                                                    "looking for more current-scene images." if self._approved_images else
+                                                    "No usable matches yet; trying a shorter query from the current spoken context.")})
+            transient = any(attempt_failures[reason] for reason in ("Source temporarily rate-limited", "Source unavailable",
+                                                                  "Network error", "Image download timed out"))
+            if self._approved_images and not ranking_failed:
+                count = len(self._approved_images)
+                message = (f"{count} relevant images ready for this scene." if count >= self.settings.prefetch_count else
+                           f"{count}/{self.settings.prefetch_count} relevant images ready. No further images passed the current checks; "
+                           "new story subjects will refresh the set.")
+                if transient and count < self.settings.prefetch_count:
+                    message = (f"{count}/{self.settings.prefetch_count} relevant images ready. Some image sources are temporarily unavailable; "
+                               "keeping ready images while they retry.")
+                if is_fallback and (self._latest_topic or topic) is query_basis:
+                    message += " · using a shorter query from the current spoken context"
+                self.emit("retrieval", {"phase": "ready", "accepted": count,
+                                        **attempt_stats,
+                                        "rejected": sum(attempt_failures.values()), "failures": dict(attempt_failures),
+                                        "threshold": self.settings.relevance_threshold, "message": message})
+            if ranking_failed or not self._approved_images or (transient and len(self._approved_images) < self.settings.prefetch_count):
                 if not ranking_failed:
-                    self.emit("status", "No new images met the relevance and quality filters. See image status for details.")
+                    message = ("Keeping ready images while unavailable sources retry." if self._approved_images else
+                               "No new images met the relevance and quality filters. See image status for details.")
+                    self.emit("status", message)
                 # New speech topics wake retry immediately rather than waiting
                 # behind the old topic's fixed thirty-second failure delay.
                 await self._wait_for_search_retry(generation, topic)
             cache.prune(set(self._protected_paths))
 
     async def _evaluate_candidates(self, topic, candidates, fallback_topic, fallback_query,
-                                   downloader, ranker, cache, rejected_urls):
+                                   downloader, ranker, cache, rejected_urls, attempt_failures, attempt_stats):
         def ranking_topic():
             current = self._latest_topic or topic
             # Retain full context, concepts and kind, but score matches to
@@ -452,10 +510,12 @@ class Pipeline:
             effective = replace(current, query=fallback_query) if current is fallback_topic else current
             return current, effective
 
+        self._sync_image_pool(self._latest_topic or topic)
         by_url = {}
         for candidate in candidates:
             by_url.setdefault(candidate.image_url, candidate)
-        unique = list(by_url.values())
+        unique = [candidate for url, candidate in by_url.items() if url not in self._approved_images]
+        attempt_stats["found"] += len(unique)
         # Rank metadata before prefetch to start with promising source
         # images; retain other candidates for actual multimodal ranking.
         if ranker.name == "metadata" and unique:
@@ -525,6 +585,9 @@ class Pipeline:
                     return None, reason
 
         prepared = []
+        ranked_by_url = {}
+        ranked_scope = None
+        ranked_generation = None
         best_score = None
         ranking_failed = False
         tasks = [asyncio.create_task(prepare(c)) for c in unique]
@@ -535,34 +598,62 @@ class Pipeline:
                 image, reason = await completed
                 if image is None:
                     failures[reason] += 1
+                    attempt_failures[reason] += 1
                     report("downloading", len(published), best_score)
                     continue
                 downloaded += 1
+                attempt_stats["downloaded"] += 1
                 prepared.append(image)
                 with self._history_lock:
                     recent = list(self._recent_hashes)
-                # Topic changes should not discard an entire useful batch:
-                # re-evaluate it against the CURRENT context before display.
-                # Repeat if context changes while a local model is ranking.
+                # Each new image uses the latest complete context snapshot.
+                # Rechecking the growing batch after every arrival was quadratic
+                # model work. Only a changed visual scene invalidates its scores.
                 while True:
                     basis, current = ranking_topic()
+                    scope = self._visual_scope(basis)
+                    generation = self.session_state.playback_generation
+                    new_scene = (ranked_generation != generation or self._scope_changed(ranked_scope, scope))
+                    to_rank = prepared if new_scene else [image]
                     if ranker.name in {"clip", "context_clip"} and getattr(ranker, "model", None) is None:
                         report("loading", len(published), best_score)
                     try:
-                        ranked = (await _background(ranker.rank, current, prepared, recent)) if current.query else []
+                        batch = (await _background(ranker.rank, current, to_rank, recent)) if current.query else []
                     except Exception as exc:
                         ranking_failed = True
                         self._report_ranking_failure(ranker, exc, len(unique), downloaded, len(published))
                         break
-                    if basis is (self._latest_topic or topic):
-                        break
+                    latest = self._latest_topic or topic
+                    if (generation != self.session_state.playback_generation
+                            or self._scope_changed(scope, self._visual_scope(latest))):
+                        # An obsolete scene cannot approve images for its
+                        # successor. Summary/transcript additions within the
+                        # same scene must not starve a completed slow ranking.
+                        continue
+                    if new_scene:
+                        ranked_by_url.clear()
+                        if ranked_scope is not None:
+                            published.clear()
+                            last_selection = ()
+                    self._sync_image_pool(latest)
+                    for candidate in to_rank:
+                        ranked_by_url.pop(candidate.image_url, None)
+                    ranked_by_url.update((candidate.image_url, candidate) for candidate in batch)
+                    ranked_scope, ranked_generation = scope, generation
+                    ranked = sorted(ranked_by_url.values(), key=lambda candidate: candidate.score, reverse=True)
+                    break
                 if ranking_failed:
                     break
                 best_score = max((c.score for c in ranked), default=None)
+                if best_score is not None:
+                    attempt_stats["best_score"] = max(best_score, attempt_stats["best_score"] or 0.0)
                 chosen, hashes = [], list(recent)
                 for candidate in ranked:
+                    other_hashes = [approved.phash for url, approved in self._approved_images.items()
+                                    if url != candidate.image_url]
                     if (candidate.score >= self.settings.relevance_threshold
-                            and not is_duplicate(candidate.phash, hashes)):
+                            and not is_duplicate(candidate.phash, hashes)
+                            and not is_duplicate(candidate.phash, other_hashes)):
                         chosen.append(candidate)
                         hashes.append(candidate.phash)
                         if len(chosen) >= self.settings.prefetch_count:
@@ -572,10 +663,11 @@ class Pipeline:
                     last_selection = selection
                     self._protected_paths.extend(c.local_path for c in chosen)
                     published.update(c.image_url for c in chosen)
+                    self._approved_images.update((candidate.image_url, candidate) for candidate in chosen)
                     self.emit("images", chosen)
                     self.emit("status", f"Ready: {len(chosen)} relevant images · {ranker.name} ranking")
-                report("ready" if published else "downloading", len(published), best_score)
-                if len(published) >= self.settings.prefetch_count:
+                report("ready" if self._approved_images else "downloading", len(self._approved_images), best_score)
+                if len(self._approved_images) >= self.settings.prefetch_count:
                     break
         finally:
             for task in tasks:
@@ -583,7 +675,7 @@ class Pipeline:
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
         if not ranking_failed:
-            report("ready" if published else "empty", len(published), best_score)
+            report("ready" if self._approved_images else "empty", len(self._approved_images), best_score)
         return bool(published), ranking_failed
 
     async def _query_candidates(self, query, providers, cache):

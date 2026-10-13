@@ -49,13 +49,13 @@ While monitoring is stopped, choose a profile in **Audiobooks** and click **Appl
 
 | Preset | Slide interval | Recorded context | Relevance minimum | Sources |
 | --- | --- | --- | --- | --- |
-| Fiction | 10 seconds | Full session | 0.40 | Wikimedia Commons, Openverse |
-| History & Biography | 12 seconds | Full session | 0.40 | Wikimedia Commons, Internet Archive |
-| Science & Technical | 10 seconds | Full session | 0.35 | Wikimedia Commons, Openverse |
+| Fiction | 10 seconds | Full session | 0.30 | Wikimedia Commons, Openverse |
+| History & Biography | 12 seconds | Full session | 0.35 | Wikimedia Commons, Internet Archive |
+| Science & Technical | 10 seconds | Full session | 0.30 | Wikimedia Commons, Openverse |
 
-Use History & Biography for historical nonfiction. **Book or context** optionally supplies a title, setting or other background to the local interpreter; changing it starts a fresh session on the next Start, with a status explanation. Every newly recorded segment is processed incrementally into the established narrative context, and the full retained text contributes to image relevance. The profiles retain legacy `transcript_window_seconds` values of 90/120/90 for compatibility; those values do not cut off full-session mode. Older text already discarded by an earlier app version cannot be recovered.
+Use History & Biography for historical nonfiction. **Book or context** optionally supplies a title, setting or other background to the local interpreter; changing it re-reads the retained transcript on the next Start. **New book / clear context** explicitly starts a fresh session. Every newly recorded segment is processed incrementally into the established narrative context, and the full retained text contributes to image relevance. The profiles retain legacy `transcript_window_seconds` values of 90/120/90 for compatibility; those values do not cut off full-session mode. Older text already discarded by an earlier app version cannot be recovered.
 
-If a search has no results, bounded alternative queries come from the interpreted visual subjects in full-session mode, or from locally identified phrases in basic mode. The selected providers and relevance minimum remain unchanged. The image status identifies an alternative search. Successful empty searches are cached.
+When a search provides fewer accepted images than the configured prefetch target, the app tries up to two related queries from the interpreted visual subjects in full-session mode, or from locally identified phrases in basic mode. Matches accumulate without discarding earlier accepted images. New grounded visual details or alternatives can refresh an undersized set even when its primary query stays the same; transcript-count and summary-only changes do not start repeated searches. The selected providers and relevance minimum remain unchanged. Image status identifies alternative searches and explains when only a small current set is available. Successful empty searches are cached.
 
 ## Local relevance options
 
@@ -70,6 +70,8 @@ If you installed without `-WithClip`, add the image-embedding dependencies:
 CLIP weights download once into the app's model cache. **Full context + image embeddings** compares actual image pixels with the current scene/subjects (50%), narrative summary and optional book background (30%), and every retained transcript segment (20%). Text is split into windows of at most 75 tokens, and full-session windows are weighted by token count rather than truncating the transcript to one CLIP input. The combined cosine similarity is rescaled to a 0–1 relevance score; it is not a probability. Source credibility and image size do not boost this score. Your selected relevance minimum is applied unchanged.
 
 CPU image ranking is the default. GPU CLIP can be configured with `clip_device = "cuda"` if compatible PyTorch/CUDA packages are installed. Image embeddings and local interpretation do not guarantee relevance, factual identity or historical authenticity. Whole-session averaging can dilute a brief detail even though its text contributes.
+
+The audiobook cutoffs are starting points rather than calibrated accuracy targets. If image status reports a best score below your minimum, reduce **Relevance minimum** gradually; if unrelated images appear, raise it. Two repeating images mean only two have been approved for the current scene. Lowering the minimum can increase variety at the cost of accepting weaker matches. Click **Save settings** to retain a value changed in the app.
 
 For a lighter baseline, select **Basic phrase analysis** (`semantic_provider = "contextual"`) and **Source metadata (basic)** (`ranking = "metadata"`). This English heuristic focuses on recent phrases and cannot reliably resolve narrative relationships. **Local CLIP embeddings** (`ranking = "clip"`) is the older query-only image matcher; it does not use full-session narrative embeddings. Its scores differ from full-context scores, so the same threshold can behave differently across modes.
 

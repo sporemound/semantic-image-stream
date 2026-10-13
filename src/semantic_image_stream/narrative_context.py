@@ -26,6 +26,7 @@ LOCAL_URL = "http://127.0.0.1:11434"
 MAX_BATCH_CHARS = 6000
 MAX_RESPONSE_BYTES = 262_144
 MAX_OUTPUT_BYTES = 8192
+MAX_OUTPUT_TOKENS = 768
 
 RESPONSE_SCHEMA = {
     "type": "object",
@@ -82,6 +83,10 @@ class NarrativeContextError(RuntimeError):
 
 
 class NarrativeCancelled(NarrativeContextError):
+    pass
+
+
+class NarrativeOutputLimit(NarrativeContextError):
     pass
 
 
@@ -234,6 +239,7 @@ class LocalNarrativeAnalyzer:
         self._service_verified = False
         self._manifest_digest = None
         self.summary_method = "local model"
+        self._output_tokens = 384
 
     @property
     def summary(self):
@@ -332,7 +338,7 @@ class LocalNarrativeAnalyzer:
             "keep_alive": "5m",
             "options": {"num_gpu": 0, "num_ctx": 4096,
                         "num_thread": self.settings.context_cpu_threads,
-                        "temperature": 0, "num_predict": 384},
+                        "temperature": 0, "num_predict": self._output_tokens},
         }
         client = self._client()
         finished = threading.Event()
@@ -357,6 +363,7 @@ class LocalNarrativeAnalyzer:
         received = output_size = 0
         completed = False
         prompt_tokens = 0
+        done_reason = ""
         try:
             with client.stream("POST", "/api/generate", json=payload) as response:
                 active_response["value"] = response
@@ -385,6 +392,7 @@ class LocalNarrativeAnalyzer:
                         if item.get("done"):
                             completed = True
                             prompt_tokens = item.get("prompt_eval_count", 0)
+                            done_reason = item.get("done_reason", "")
                 if buffered.strip():
                     item = json.loads(buffered)
                     if not item.get("done") or item.get("error"):
@@ -396,15 +404,25 @@ class LocalNarrativeAnalyzer:
                     output_size += len(piece.encode("utf-8"))
                     completed = True
                     prompt_tokens = item.get("prompt_eval_count", 0)
+                    done_reason = item.get("done_reason", "")
                 _check_stop(stop_event)
                 if not completed or output_size > MAX_OUTPUT_BYTES:
                     raise NarrativeContextError("The local story model returned an incomplete response.")
                 if not isinstance(prompt_tokens, int) or prompt_tokens < 0:
                     raise ValueError("invalid token count")
-                if prompt_tokens >= 3500:
+                # Reserve room for a complete structured response when the
+                # schema needs more than the initial generation budget.
+                if prompt_tokens >= min(3500, 4096 - self._output_tokens - 96):
                     self._batch_chars = max(256, self._batch_chars // 2)
                     raise NarrativeContextError("The story passage exceeded model capacity; retrying in smaller passages.")
-                return json.loads("".join(output))
+                try:
+                    return json.loads("".join(output))
+                except json.JSONDecodeError:
+                    if done_reason == "length":
+                        self._output_tokens = min(MAX_OUTPUT_TOKENS, self._output_tokens * 2)
+                        raise NarrativeOutputLimit(
+                            "The story model reached its response limit; context is retained for a complete retry.") from None
+                    raise
         except (httpx.HTTPError, OSError):
             _check_stop(stop_event)
             self._service_verified = False
@@ -565,7 +583,11 @@ class LocalNarrativeAnalyzer:
                 if new_text.strip():
                     status(f"Understanding the story locally · {self._cursor}/{len(transcript)} transcript segments processed")
                     available = self.settings.book_context + " " + self._processed_text(transcript, cursor, offset)
-                    candidate = self._generate(new_text, active_stop)
+                    try:
+                        candidate = self._generate(new_text, active_stop)
+                    except NarrativeOutputLimit:
+                        status("Completing the local story response with a larger bounded budget…")
+                        candidate = self._generate(new_text, active_stop)
                     try:
                         state = self._validate(candidate, available, new_text)
                     except RepairableGroundingError as error:

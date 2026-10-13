@@ -33,3 +33,9 @@ def test_unknown_profile_cannot_change_settings(tmp_path):
     with pytest.raises(ValueError, match="supported audiobook"):
         apply_audiobook_preset(settings, "missing")
     assert settings.transcript_window_seconds == 45
+
+
+@pytest.mark.parametrize("key,minimum", [("fiction", .30), ("history", .35), ("science", .30)])
+def test_audiobook_cutoffs_start_with_room_for_related_source_images(key, minimum):
+    profile = apply_audiobook_preset(Settings(relevance_threshold=.65), key)
+    assert profile.relevance_threshold == minimum

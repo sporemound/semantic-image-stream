@@ -2,6 +2,7 @@
 import asyncio
 from dataclasses import replace
 import json
+import time
 
 from PIL import Image
 import pytest
@@ -231,6 +232,7 @@ async def test_empty_search_tries_only_two_distinct_alternatives_and_caches_empt
 @pytest.mark.asyncio
 async def test_fallback_matches_keep_full_context_and_selected_relevance_minimum(tmp_path, monkeypatch):
     pipeline, cache, directory, events, ready = pipeline_fixture(tmp_path)
+    pipeline.settings.prefetch_count = 1
     pipeline.settings.relevance_threshold = 0.50
     topic = Topic("andale cagey officer didn't crew chanted",
                   "Corona satellite imagery and a KGB mission in Mexico City",
@@ -293,6 +295,7 @@ async def test_partial_provider_failure_still_tries_alternatives_without_negativ
 @pytest.mark.parametrize("cached", [False, True])
 async def test_primary_results_never_trigger_alternative_queries(tmp_path, monkeypatch, cached):
     pipeline, cache, directory, _, ready = pipeline_fixture(tmp_path)
+    pipeline.settings.prefetch_count = 1
     topic = Topic("Corona satellite", "Corona satellite imagery", kind="history")
     pipeline._generation = 1
     pipeline._latest_topic = topic
@@ -427,6 +430,7 @@ async def test_raw_results_without_accepted_images_try_other_current_subjects(tm
     from semantic_image_stream.image_download import DownloadError
 
     pipeline, cache, directory, events, ready = pipeline_fixture(tmp_path)
+    pipeline.settings.prefetch_count = 1
     pipeline.settings.relevance_threshold = 0.40
     topic = Topic("unhelpful narrated action", "The expedition is stranded in an Arctic snowstorm.",
                   ("expedition", "Arctic"), "general", summary="An expedition searches for shelter.",
@@ -547,5 +551,254 @@ async def test_new_ungrounded_scene_never_approves_old_inflight_images(tmp_path,
         await asyncio.wait_for(task, 2)
         assert ranker.calls == 0
         assert not ready.is_set() and not any(kind == "images" for kind, _ in events)
+    finally:
+        await cleanup(task, pipeline, cache)
+
+
+@pytest.mark.asyncio
+async def test_same_scene_context_updates_do_not_starve_a_slow_image_ranker(tmp_path):
+    pipeline, cache, directory, _, ready = pipeline_fixture(tmp_path)
+    topic = Topic("Arctic camp", "A camp on Arctic ice.", summary="Explorers camp in the Arctic.",
+                  scene="Tents on Arctic ice", visual_subjects=("tents", "Arctic ice"),
+                  transcript=("Explorers camp in the Arctic.",))
+    pipeline._latest_topic = topic
+    pipeline._update_playback_scope(topic)
+    pipeline.topic_queue.put_nowait((1, topic))
+    image = ImageCandidate("https://image.example/fast", "https://source.example/file", "Arctic camp", "wikimedia")
+
+    class SlowRanker:
+        name = "context_clip"
+        model = object()
+        calls = 0
+
+        def rank(self, current, candidates, recent):
+            self.calls += 1
+            time.sleep(0.06)
+            return [replace(candidate, score=0.9) for candidate in candidates]
+
+    async def update_context():
+        index = 0
+        while True:
+            await asyncio.sleep(0.01)
+            index += 1
+            latest = replace(topic, summary=f"The same camp after passage {index}.",
+                             transcript=(*topic.transcript, f"New narrative passage {index}."),
+                             context_used_segments=index + 1)
+            assert not pipeline._update_playback_scope(latest)
+            pipeline._latest_topic = latest
+
+    ranker = SlowRanker()
+    updates = asyncio.create_task(update_context())
+    task = asyncio.create_task(pipeline._search([Provider([image])], Downloader(directory), ranker, cache))
+    try:
+        await asyncio.wait_for(ready.wait(), 0.6)
+        assert not updates.done(), "Images must arrive while spoken context continues to update"
+        assert ranker.calls == 1
+        assert pipeline._latest_topic is not topic
+    finally:
+        updates.cancel()
+        await asyncio.gather(updates, return_exceptions=True)
+        await cleanup(task, pipeline, cache)
+
+
+@pytest.mark.asyncio
+async def test_progressive_ranking_evaluates_each_new_image_once_for_unchanged_scene(tmp_path):
+    pipeline, cache, directory, _, _ = pipeline_fixture(tmp_path)
+    topic = Topic("Arctic camp", "Explorers camp in the Arctic.", scene="Tents on Arctic ice",
+                  visual_subjects=("tents", "Arctic ice"))
+    pipeline._latest_topic = topic
+    pipeline._update_playback_scope(topic)
+    pipeline.topic_queue.put_nowait((1, topic))
+    images = [ImageCandidate(f"https://image.example/{index}", "https://source.example/file", "Arctic camp", "wikimedia")
+              for index in range(3)]
+    complete = asyncio.Event()
+
+    class DistinctDownloader(Downloader):
+        async def download(self, candidate):
+            candidate = await super().download(candidate)
+            candidate.phash = ("0" * 16, "f" * 16, "a" * 16)[int(candidate.image_url[-1])]
+            return candidate
+
+    class RecordingRanker:
+        name = "context_clip"
+        model = object()
+
+        def __init__(self):
+            self.inputs = []
+
+        def rank(self, current, candidates, recent):
+            self.inputs.append([candidate.image_url for candidate in candidates])
+            return [replace(candidate, score=0.9) for candidate in candidates]
+
+    def receive(kind, payload):
+        if kind == "images" and len(payload) == 3:
+            complete.set()
+
+    pipeline.on_event = receive
+    ranker = RecordingRanker()
+    task = asyncio.create_task(pipeline._search([Provider(images)], DistinctDownloader(directory), ranker, cache))
+    try:
+        await asyncio.wait_for(complete.wait(), 2)
+        assert [len(batch) for batch in ranker.inputs] == [1, 1, 1]
+        assert {url for batch in ranker.inputs for url in batch} == {candidate.image_url for candidate in images}
+    finally:
+        await cleanup(task, pipeline, cache)
+
+
+@pytest.mark.asyncio
+async def test_changed_scene_invalidates_cached_progressive_scores(tmp_path):
+    pipeline, cache, directory, _, _ = pipeline_fixture(tmp_path)
+    camp = Topic("Camp tents", "The Arctic camp.", scene="Camp tents on Arctic ice",
+                 visual_subjects=("camp tents", "Arctic ice"))
+    door = Topic("Wooden door", "An isolated door on Arctic ice.", scene="A wooden door on Arctic ice",
+                 visual_subjects=("wooden door", "Arctic ice"))
+    pipeline._latest_topic = camp
+    pipeline._update_playback_scope(camp)
+    pipeline.topic_queue.put_nowait((1, camp))
+    images = [ImageCandidate(f"https://image.example/{name}", "https://source.example/file", title, "wikimedia")
+              for name, title in [("camp", camp.query), ("door", door.query)]]
+    first, complete = asyncio.Event(), asyncio.Event()
+    selections = []
+
+    class SceneDownloader(Downloader):
+        async def download(self, candidate):
+            if candidate.image_url.endswith("door"):
+                await first.wait()
+                pipeline._latest_topic = door
+                assert pipeline._update_playback_scope(door)
+            candidate = await super().download(candidate)
+            candidate.phash = "0" * 16 if candidate.image_url.endswith("camp") else "f" * 16
+            return candidate
+
+    class SceneRanker:
+        name = "context_clip"
+        model = object()
+
+        def __init__(self):
+            self.inputs = []
+
+        def rank(self, current, candidates, recent):
+            self.inputs.append((current.query, len(candidates)))
+            return [replace(candidate, score=0.9 if candidate.title == current.query else 0.1)
+                    for candidate in candidates]
+
+    def receive(kind, payload):
+        if kind == "images":
+            selections.append([candidate.title for candidate in payload])
+            if len(selections) == 1:
+                first.set()
+            else:
+                complete.set()
+
+    pipeline.on_event = receive
+    ranker = SceneRanker()
+    task = asyncio.create_task(pipeline._search([Provider(images)], SceneDownloader(directory), ranker, cache))
+    try:
+        await asyncio.wait_for(complete.wait(), 2)
+        assert ranker.inputs == [(camp.query, 1), (door.query, 2)]
+        assert selections == [[camp.query], [door.query]]
+    finally:
+        await cleanup(task, pipeline, cache)
+
+
+@pytest.mark.asyncio
+async def test_underfilled_primary_set_adds_grounded_alternative_matches_without_replacing_first_images(tmp_path):
+    pipeline, cache, directory, events, _ = pipeline_fixture(tmp_path)
+    pipeline.settings.prefetch_count = 4
+    pipeline.settings.relevance_threshold = 0.40
+    topic = Topic("Arctic camp", "An Arctic camp near a wooden door.", scene="Camp and wooden door on Arctic ice",
+                  visual_subjects=("camp", "wooden door", "Arctic ice"),
+                  queries=("Arctic camp", "wooden door Arctic", "unused grounded query"))
+    pipeline._latest_topic = topic
+    pipeline._update_playback_scope(topic)
+    pipeline.topic_queue.put_nowait((1, topic))
+    images = [ImageCandidate(f"https://image.example/{index}", "https://source.example/file", "Relevant source image", "wikimedia")
+              for index in range(4)]
+    provider = QueryProvider({topic.query: images[:2], topic.queries[1]: [images[0], *images[2:]]})
+    filled = asyncio.Event()
+
+    class DistinctDownloader(Downloader):
+        async def download(self, candidate):
+            candidate = await super().download(candidate)
+            candidate.phash = ("0" * 16, "f" * 16, "a" * 16, "5" * 16)[int(candidate.image_url[-1])]
+            return candidate
+
+    class Ranker:
+        name = "context_clip"
+        model = object()
+
+        def rank(self, current, candidates, recent):
+            assert current.context == topic.context and current.scene == topic.scene
+            return [replace(candidate, score=0.9) for candidate in candidates]
+
+    def receive(kind, payload):
+        events.append((kind, payload))
+        if (kind == "retrieval" and payload["phase"] == "ready" and payload["accepted"] == 4
+                and payload.get("found") == payload.get("downloaded") == 4):
+            filled.set()
+
+    pipeline.on_event = receive
+    task = asyncio.create_task(pipeline._search([provider], DistinctDownloader(directory), Ranker(), cache))
+    try:
+        await asyncio.wait_for(filled.wait(), 2)
+        assert provider.queries == [topic.query, topic.queries[1]]
+        assert set(pipeline._approved_images) == {candidate.image_url for candidate in images}
+        assert any(kind == "images" and {candidate.image_url for candidate in payload} == {image.image_url for image in images[:2]}
+                   for kind, payload in events)
+        assert pipeline.settings.relevance_threshold == 0.40
+        final = [data for kind, data in events if kind == "retrieval" and data["phase"] == "ready"][-1]
+        assert final["found"] == final["downloaded"] == final["accepted"] == 4
+        assert final["best_score"] == 0.9 and final["failures"] == {}
+    finally:
+        await cleanup(task, pipeline, cache)
+
+
+@pytest.mark.asyncio
+async def test_partial_ready_pool_retries_transient_downloads_without_refetching_cached_query(tmp_path, monkeypatch):
+    from semantic_image_stream.image_download import DownloadError
+
+    pipeline, cache, directory, events, _ = pipeline_fixture(tmp_path)
+    pipeline.settings.prefetch_count = 2
+    topic = Topic("Arctic camp", "An Arctic camp.", queries=("Arctic camp",))
+    pipeline._generation = 1
+    pipeline._latest_topic = topic
+    pipeline.topic_queue.put_nowait((1, topic))
+    images = [ImageCandidate(f"https://image.example/{index}", "https://source.example/file", "Arctic camp", "wikimedia")
+              for index in range(2)]
+    provider = QueryProvider({topic.query: images})
+    filled = asyncio.Event()
+
+    class TransientDownloader(Downloader):
+        failed = False
+
+        async def download(self, candidate):
+            if candidate.image_url.endswith("1") and not self.failed:
+                self.failed = True
+                raise DownloadError("Retry later", reason="Source temporarily rate-limited")
+            candidate = await super().download(candidate)
+            candidate.phash = "0" * 16 if candidate.image_url.endswith("0") else "f" * 16
+            return candidate
+
+    class Ranker:
+        name = "context_clip"
+        model = object()
+
+        def rank(self, current, candidates, recent):
+            return [replace(candidate, score=0.9) for candidate in candidates]
+
+    def receive(kind, payload):
+        events.append((kind, payload))
+        if kind == "retrieval" and payload["phase"] == "ready" and payload["accepted"] == 2:
+            filled.set()
+
+    pipeline.on_event = receive
+    stop_on_empty(pipeline, monkeypatch, retries=1)
+    task = asyncio.create_task(pipeline._search([provider], TransientDownloader(directory), Ranker(), cache))
+    try:
+        await asyncio.wait_for(filled.wait(), 2)
+        assert provider.queries == [topic.query]
+        assert len(pipeline._approved_images) == 2
+        assert any(kind == "retrieval" and data.get("failures", {}).get("Source temporarily rate-limited")
+                   and "keeping ready images" in data["message"] for kind, data in events)
     finally:
         await cleanup(task, pipeline, cache)

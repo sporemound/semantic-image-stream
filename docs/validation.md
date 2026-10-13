@@ -90,6 +90,16 @@ An offscreen Qt check retained 350 transcript lines, displayed full-session cove
 
 All 291 local regression tests and lint passed for this update; source and wheel builds succeeded.
 
+## Sparse slideshow follow-up
+
+The listener reported that the relevance minimum was too high, then that playback kept cycling two images. Audiobook starting cutoffs are now 0.30 for Fiction/Science and 0.35 for History; applying a profile is explicit and updates never overwrite local settings. These values trade some selectivity for discovery and are not accuracy guarantees.
+
+Independent boundary reproductions exposed three additional bottlenecks. A successful two-image primary query stopped all further discovery; bounded alternatives now fill toward the prefetch target while retaining prior matches. Same-scene transcript updates could repeatedly invalidate a slow rank before publication; completed ranks now survive compatible context updates, while changed scenes still recheck the batch. Progressive arrivals previously re-embedded growing batches; unchanged scenes now rank each new image once. Tests verify two primary matches plus two alternative matches merge into four, same-primary new visual alternatives refresh an undersized set, and count/summary-only updates do not trigger repeated discovery.
+
+The image waiting message now shows local interpretation progress and errors before retrieval starts, while actual search status takes precedence afterward. A separately reproduced truncated structured response at the initial 384-token limit now retries once with a bounded 768-token allowance without dropping pending text; this decoder issue was not established as the listener's production cause. No new live-provider requests or real-model generation were used for these boundary reproductions.
+
+Stop retention is guarded against delayed empty context and shortened transcript callbacks. A real Qt/Pipeline Stop → completion → Start → Stop check preserves transcript, accepted context, topic header and shared session; only external capture/transcriber/provider boundaries are substituted. Background-hint edits re-read retained text and no longer silently reset it. The listener's immediate Stop clearing was not reproduced on the normal pipeline path; the delayed-empty callback regression demonstrates the destructive UI path the guard prevents. All 310 local checks and lint passed for the combined follow-up.
+
 ## Next milestones
 
 1. Benchmark real recordings and noisy live speech; add multilingual semantic analyzers and better relationship/negation handling.

@@ -344,6 +344,55 @@ async def test_same_query_updates_full_context_without_repeating_network_generat
     assert sum(kind == "context" and payload["phase"] == "ready" for kind, payload in events) == 2
 
 
+@pytest.mark.asyncio
+async def test_underfilled_set_refreshes_new_grounded_alternatives_with_stable_primary_and_scene(tmp_path):
+    from dataclasses import replace
+    from PIL import Image
+
+    pipeline = None
+    primary = "Arctic camp"
+    initial = Topic(primary, "Full story", scene="Tents on Arctic ice", visual_subjects=("tents", "Arctic ice"),
+                    queries=(primary, "old grounded alternative"))
+    events = []
+
+    def receive(kind, payload):
+        events.append((kind, payload))
+        if kind == "context" and payload["phase"] == "ready":
+            count = payload["segments_recorded"]
+            if count < 3:
+                pipeline._segments.append(TranscriptSegment(count * 6, (count + 1) * 6, f"New passage {count}"))
+            else:
+                pipeline.stop_event.set()
+
+    class Analyzer:
+        def analyze(self, segments):
+            queries = initial.queries if len(segments) == 1 else (primary, "new grounded alternative")
+            return replace(initial, queries=queries, summary=f"Summary after {len(segments)} recorded passages.",
+                           context_used_segments=len(segments))
+
+    pipeline = Pipeline(Settings(cache_dir=str(tmp_path), semantic_interval=0.01, prefetch_count=4,
+                                 relevance_threshold=0.40), receive)
+    pipeline._latest_topic = initial
+    pipeline._update_playback_scope(initial)
+    pipeline._sync_image_pool(initial)
+    image_path = tmp_path / "valid.png"
+    Image.new("RGB", (800, 600), "red").save(image_path)
+    pipeline._approved_images = {str(index): ImageCandidate(str(index), "https://source.example/file", "Approved", "wikimedia",
+                                                          local_path=str(image_path)) for index in range(2)}
+    pipeline._segments.append(TranscriptSegment(0, 6, "Initial story passage"))
+    pipeline.topic_queue = asyncio.Queue(maxsize=1)
+    before = pipeline.session_state.playback_generation
+    await asyncio.wait_for(pipeline._interpret(Analyzer()), 2)
+    assert pipeline._generation == 2, "Only the initial underfilled request and new query alternative should schedule a search"
+    generation, queued = pipeline.topic_queue.get_nowait()
+    assert generation == 2 and queued.query == primary
+    assert queued.queries == (primary, "new grounded alternative")
+    assert pipeline.session_state.playback_generation == before
+    assert len(pipeline._approved_images) == 2
+    assert not any(kind == "topic" for kind, _ in events), "A refill must not invalidate the approved scene playlist"
+    assert pipeline.settings.relevance_threshold == 0.40
+
+
 def test_semantic_failure_keeps_capture_and_transcription_running(tmp_path, monkeypatch):
     failed, recovered = threading.Event(), threading.Event()
     events = []

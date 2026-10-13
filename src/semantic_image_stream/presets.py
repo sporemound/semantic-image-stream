@@ -21,15 +21,15 @@ class AudiobookPreset:
 AUDIOBOOK_PRESETS = {
     "fiction": AudiobookPreset(
         "Fiction", "Understands the full story locally; images change every 10 seconds when available.",
-        90, 8, 15, 10, 0.25, 0.40, ("wikimedia", "openverse"),
+        90, 8, 15, 10, 0.25, 0.30, ("wikimedia", "openverse"),
     ),
     "history": AudiobookPreset(
         "History & Biography", "Uses full-session context and Commons/archival sources; 12-second slides.",
-        120, 8, 15, 12, 0.30, 0.40, ("wikimedia", "archive"),
+        120, 8, 15, 12, 0.30, 0.35, ("wikimedia", "archive"),
     ),
     "science": AudiobookPreset(
         "Science & Technical", "Uses full-session explanations with a 6-second context check and 10-second slides.",
-        90, 6, 12, 10, 0.35, 0.35, ("wikimedia", "openverse"),
+        90, 6, 12, 10, 0.35, 0.30, ("wikimedia", "openverse"),
     ),
 }
 

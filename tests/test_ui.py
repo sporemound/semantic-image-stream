@@ -728,6 +728,9 @@ def test_full_transcript_appends_after_160_lines_without_duplicates_or_rebuilds(
     assert "350 awaiting context update" in window.context_status.text()
     replacement = [TranscriptSegment(0, 5, "Different fixture transcript.")]
     window._handle_event(0, "transcript", replacement)
+    assert window.transcript.toPlainText() == text  # Short snapshots cannot erase a recorded session.
+    window.new_book()
+    window._handle_event(window._session, "transcript", replacement)
     assert window.transcript.document().blockCount() == 1
     assert "Different fixture transcript." in window.transcript.toPlainText()
 
@@ -797,7 +800,7 @@ def test_new_book_clears_local_context_and_seed_and_rejects_prior_events(window,
     assert not recording_context_pipeline[-1].session_state.segments
 
 
-def test_changing_book_seed_starts_a_fresh_explained_context(window, recording_context_pipeline):
+def test_changing_book_background_reuses_all_recorded_text_with_an_explanation(window, recording_context_pipeline):
     window.start_monitoring()
     previous = recording_context_pipeline[-1]
     previous.session_state.segments.append(TranscriptSegment(0, 5, "Previous context."))
@@ -806,10 +809,10 @@ def test_changing_book_seed_starts_a_fresh_explained_context(window, recording_c
     window.book_context.setText("A new historical book")
     window.start_monitoring()
     current = recording_context_pipeline[-1]
-    assert current.session_state is not previous.session_state
+    assert current.session_state is previous.session_state
     assert current.settings.book_context == "A new historical book"
-    assert not window.transcript.toPlainText()
-    assert "Book/context changed" in window.status_label.text()
+    assert "Previous context." in window.transcript.toPlainText()
+    assert "re-reading the retained transcript" in window.status_label.text()
 
 
 def test_delete_history_also_resets_all_local_context(window, recording_context_pipeline):
@@ -910,3 +913,198 @@ def test_significant_scene_key_clears_same_query_playback_without_summary_churn(
     assert list(window.slideshow.pending) == [third, first]
     window.next_image()
     assert window.slideshow.current is third
+
+
+def test_image_status_explains_context_wait_and_model_errors_without_opening_context_tab(window):
+    window.interpreter.setCurrentIndex(window.interpreter.findData("ollama"))
+    window._handle_event(0, "transcript", [TranscriptSegment(0, 5, "The spacecraft entered orbit.")])
+    assert "recorded speech is waiting for interpretation" in window.image_status_label.text()
+    assert "qwen2.5:7b" in window.image_status_label.text()
+    assert "0 of 1 passages processed" in window.image_status_label.text()
+    window._handle_event(0, "context", {"phase": "updating", "segments_used": 0, "segments_recorded": 1,
+                                      "model": "qwen2.5:7b", "method": "ollama",
+                                      "message": "Loading the local story model…"})
+    assert "local model is reading the recorded story" in window.image_status_label.text()
+    assert "Loading the local story model" in window.image_status_label.text()
+    assert window.canvas.empty_message == window.image_status_label.text()
+    window._handle_event(0, "context", {"phase": "error", "message": "The local model timed out; recorded speech is retained."})
+    error = window.image_status_label.text()
+    assert "needs attention" in error and "model timed out" in error
+    assert window.image_status_label.objectName() == "error"
+    window._handle_event(0, "status", "Recognizing captured audio locally…")
+    assert window.image_status_label.text() == error
+    window._handle_event(0, "context", {"phase": "updating", "message": "Retrying local interpretation."})
+    assert "Retrying local interpretation" in window.image_status_label.text()
+    assert window.image_status_label.objectName() == "imageStatus"
+
+
+def test_context_wait_never_replaces_actual_retrieval_status(window):
+    window._handle_event(0, "retrieval", {"phase": "searching", "message": "Searching selected image sources…",
+                                        "found": 4, "downloaded": 1, "accepted": 0})
+    retrieval = window.image_status_label.text()
+    window._handle_event(0, "context", {"phase": "updating", "model": "qwen2.5:7b", "method": "ollama",
+                                      "segments_used": 2, "segments_recorded": 7, "message": "Reading later narration."})
+    assert window.image_status_label.text() == retrieval
+    window._handle_event(0, "context", {"phase": "error", "message": "The local model is unavailable."})
+    assert window.image_status_label.text() == retrieval
+    assert window.image_status_label.objectName() == "imageStatus"
+    assert "unavailable" in window.context_status.text()
+
+
+def test_context_wait_never_replaces_delivered_image_status(window, image_factory):
+    window._handle_event(0, "images", [image_factory()])
+    retrieval = window.image_status_label.text()
+    assert window._retrieval_seen
+    window._handle_event(0, "context", {"phase": "updating", "model": "qwen2.5:7b", "method": "ollama",
+                                      "message": "Reading the next passage."})
+    assert window.image_status_label.text() == retrieval
+
+
+def test_ready_context_explains_missing_visual_subject_before_search(window):
+    window._handle_event(0, "context", {"phase": "ready", "model": "qwen2.5:7b", "method": "ollama",
+                                      "segments_used": 3, "segments_recorded": 3, "visual_subjects": [],
+                                      "message": "No grounded visual subject in this passage yet."})
+    assert "no visual subject found" in window.image_status_label.text()
+    assert "3 of 3 passages processed" in window.image_status_label.text()
+    window._handle_event(0, "context", {"phase": "ready", "visual_subjects": ["spacecraft in orbit"], "message": ""})
+    assert "context ready; waiting for image search" in window.image_status_label.text()
+
+
+def test_stop_click_keeps_recorded_text_and_context_despite_late_empty_callbacks(window, recording_context_pipeline):
+    QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
+    pipeline = recording_context_pipeline[-1]
+    first = TranscriptSegment(0, 5, "The satellite entered orbit.")
+    pipeline.session_state.segments.append(first)
+    pipeline.callback("transcript", list(pipeline.session_state.segments))
+    pipeline.callback("context", {"phase": "ready", "summary": "The satellite is in orbit.",
+                                  "scene": "A satellite above Earth.", "visual_subjects": ["satellite in orbit"],
+                                  "segments_used": 1, "segments_recorded": 1, "playback_key": "scene:1"})
+    pipeline.callback("topic", Topic("satellite in orbit", first.text))
+    transcript, context = window.transcript.toPlainText(), window.context_text.toPlainText()
+    context_status, topic = window.context_status.text(), window.topic_label.text()
+    QTest.mouseClick(window.stop_button, Qt.MouseButton.LeftButton)
+    assert not window._monitoring
+    assert window.transcript.toPlainText() == transcript
+    assert window.context_text.toPlainText() == context
+    pipeline.callback("transcript", [])
+    pipeline.callback("context", {"phase": "updating", "summary": "", "scene": "", "visual_subjects": [],
+                                  "segments_used": 0, "segments_recorded": 0, "playback_key": "scene:2"})
+    pipeline.callback("topic", Topic("", ""))
+    assert window.transcript.toPlainText() == transcript
+    assert window.context_text.toPlainText() == context
+    assert window.context_status.text() == context_status
+    assert window.topic_label.text() == topic
+    second = TranscriptSegment(6, 11, "It deployed an antenna.")
+    pipeline.session_state.segments.append(second)
+    pipeline.callback("transcript", list(pipeline.session_state.segments))
+    assert window.transcript.document().blockCount() == 2
+    assert "The satellite entered orbit." in window.transcript.toPlainText()
+    assert window.context_text.toPlainText() == context
+    QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
+    assert window.topic_label.text() == topic
+    assert window.context_text.toPlainText() == context
+    assert recording_context_pipeline[-1].session_state is pipeline.session_state
+    assert window.transcript.document().blockCount() == 2
+
+
+def test_context_update_retains_previous_interpretation_until_a_new_ready_result(window):
+    window._handle_event(0, "context", {"phase": "ready", "summary": "An established story.",
+                                      "scene": "A spacecraft in orbit.", "visual_subjects": ["spacecraft"],
+                                      "segments_used": 4, "segments_recorded": 4})
+    context = window.context_text.toPlainText()
+    window._handle_event(0, "context", {"phase": "updating", "summary": "", "scene": "", "visual_subjects": [],
+                                      "segments_used": 0, "segments_recorded": 4})
+    assert window.context_text.toPlainText() == context
+    window._handle_event(0, "context", {"phase": "error", "summary": "", "scene": "", "visual_subjects": []})
+    assert window.context_text.toPlainText() == context
+    window._handle_event(0, "context", {"phase": "ready", "summary": "The next established scene.",
+                                      "scene": "The spacecraft lands.", "visual_subjects": ["spacecraft landing"]})
+    assert "The next established scene." in window.context_text.toPlainText()
+    assert "An established story." not in window.context_text.toPlainText()
+
+
+def test_real_pipeline_stop_button_and_restart_preserve_the_full_session(window, app, monkeypatch):
+    """Run actual Pipeline clocks/signals, substituting only external boundaries."""
+    import numpy as np
+    from semantic_image_stream import audio_capture, engine, image_download, search_providers, transcription
+    from semantic_image_stream.models import AudioChunk
+
+    created = []
+
+    class FixtureCapture:
+        def run(self, on_chunk, on_status, stop_event):
+            if len(created) == 1:
+                on_chunk(AudioChunk(np.ones(16000, dtype=np.float32), 0))
+            stop_event.wait()
+
+        def stop(self):
+            pass
+
+    def capture_factory(settings):
+        capture = FixtureCapture()
+        created.append(capture)
+        return capture
+
+    class FixtureTranscriber:
+        def __init__(self, *args):
+            pass
+
+        def transcribe(self, chunk):
+            return [TranscriptSegment(chunk.start, chunk.start + 1, "The satellite entered orbit above Earth.")]
+
+        def stop(self):
+            pass
+
+    class FixtureAnalyzer:
+        context_used_segments = 0
+
+        def bind(self, *args):
+            pass
+
+        def analyze(self, segments):
+            self.context_used_segments = len(segments)
+            return Topic("satellite orbit", " ".join(segment.text for segment in segments),
+                         summary="The satellite is in orbit above Earth.", scene="A satellite above Earth.",
+                         visual_subjects=("satellite in orbit",), context_used_segments=len(segments))
+
+    class NoImageDownloader:
+        def __init__(self, *args):
+            pass
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(audio_capture, "create_capture", capture_factory)
+    monkeypatch.setattr(transcription, "FasterWhisperTranscriber", FixtureTranscriber)
+    monkeypatch.setattr(engine, "build_analyzer", lambda *args, **kwargs: FixtureAnalyzer())
+    monkeypatch.setattr(search_providers, "build_providers", lambda settings: [])
+    monkeypatch.setattr(image_download, "ImageDownloader", NoImageDownloader)
+    window.semantic_interval.setValue(1)
+
+    def until(predicate):
+        deadline = time.monotonic() + 8
+        while not predicate() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        assert predicate(), window.status_label.text()
+
+    QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
+    until(lambda: bool(window.context_text.toPlainText()) and bool(window.transcript.toPlainText()))
+    state = window._session_state
+    assert len(state.segments) == 1 and state.topic is not None
+    transcript, context = window.transcript.toPlainText(), window.context_text.toPlainText()
+    topic = window.topic_label.text()
+    QTest.mouseClick(window.stop_button, Qt.MouseButton.LeftButton)
+    assert window.transcript.toPlainText() == transcript and window.context_text.toPlainText() == context
+    until(lambda: not window._monitoring)
+    assert window._session_state is state and state.topic is not None
+    assert window.transcript.toPlainText() == transcript and window.context_text.toPlainText() == context
+    assert window.topic_label.text() == topic
+    QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
+    assert window.transcript.toPlainText() == transcript and window.context_text.toPlainText() == context
+    assert window.topic_label.text() == topic
+    until(lambda: len(created) == 2)
+    assert window._session_state is state and len(state.segments) == 1
+    QTest.mouseClick(window.stop_button, Qt.MouseButton.LeftButton)
+    until(lambda: not window._monitoring)
+    assert window.transcript.toPlainText() == transcript and window.context_text.toPlainText() == context
