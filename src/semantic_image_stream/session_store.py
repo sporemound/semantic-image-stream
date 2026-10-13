@@ -45,6 +45,15 @@ def _texts(value, count=64, maximum=1000):
     return tuple(_text(item, maximum) for item in value)
 
 
+def _finite_number(value):
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def _topic_fields(topic):
     if topic is None:
         return None
@@ -84,9 +93,7 @@ def restore_session(data):
         if not isinstance(row, dict):
             raise ValueError("Invalid saved passage")
         start, end = row.get("start"), row.get("end")
-        if (not isinstance(start, (int, float)) or isinstance(start, bool)
-                or not isinstance(end, (int, float)) or isinstance(end, bool)
-                or not math.isfinite(start) or not math.isfinite(end) or not 0 <= start <= end):
+        if not _finite_number(start) or not _finite_number(end) or not 0 <= start <= end:
             raise ValueError("Invalid saved timestamp")
         segments.append(TranscriptSegment(start, end, _text(row.get("text"), 1_000_000),
                                           _text(row.get("language", ""), 100)))

@@ -238,6 +238,7 @@ def test_corrupt_file_is_preserved_until_explicit_clear(settings):
     lambda data: data.update(revision=True),
     lambda data: data.update(provider_key=["remote", "model", "background"]),
     lambda data: data["segments"][0].update(start=float("nan")),
+    lambda data: data["segments"][0].update(start=10 ** 400, end=10 ** 401),
     lambda data: data["segments"][0].update(end=-1),
     lambda data: data["segments"][0].update(text={"unexpected": "object"}),
 ])
