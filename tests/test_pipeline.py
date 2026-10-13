@@ -638,6 +638,269 @@ def test_changed_story_model_rebuilds_analyzer_without_erasing_recorded_text(tmp
     assert len(state.segments) == 1 and state.segments[0].text == "Earlier story context"
 
 
+def test_session_change_callback_runs_outside_lock_and_never_logs_recorded_text(caplog):
+    state = SessionState()
+    acquired = threading.Event()
+
+    def save(snapshot):
+        assert snapshot is state and snapshot.revision == 1
+
+        def read():
+            with snapshot.lock:
+                acquired.set()
+
+        reader = threading.Thread(target=read)
+        reader.start()
+        assert acquired.wait(1), "The save callback must not retain the session lock"
+        reader.join(timeout=1)
+        raise OSError("private recorded book text")
+
+    state.on_change = save
+    state.notify_changed()
+    assert state.revision == 1
+    assert "OSError" in caplog.text and "private recorded book text" not in caplog.text
+    assert len(state.session_id) == 32
+    assert state.session_id != SessionState().session_id
+
+
+@pytest.mark.parametrize("provider", ["ollama", "contextual"])
+def test_rebuild_loaded_analyzer_preserves_matching_context_and_scope(tmp_path, monkeypatch, provider):
+    settings = Settings(cache_dir=str(tmp_path), semantic_provider=provider, book_context="Arctic expedition")
+    segments = [TranscriptSegment(index * 6, (index + 1) * 6, f"Recorded passage {index}")
+                for index in range(330)]
+    retained = Topic("Arctic camp", "Full text", context_used_segments=330)
+    checkpoint = {"cursor": 330}
+    state = SessionState(segments=segments, topic=retained, playback_generation=9,
+                         playback_scope=(True, frozenset({"arctic", "camp"}), frozenset()),
+                         provider_key=(provider, settings.context_model, settings.book_context),
+                         book_context=settings.book_context,
+                         analyzer_checkpoint=checkpoint if provider == "ollama" else None)
+    restored, saved = [], []
+
+    class Analyzer:
+        def restore_checkpoint(self, value, recording):
+            restored.append((value, recording))
+            return True
+
+    fresh = Analyzer()
+    state.on_change = lambda snapshot: saved.append(snapshot.revision)
+    monkeypatch.setattr("semantic_image_stream.engine.build_analyzer", lambda *args, **kwargs: fresh)
+    pipeline = Pipeline(settings, lambda *args: None, session_state=state)
+    assert pipeline._session_analyzer() is fresh
+    assert state.analyzer is fresh
+    assert state.topic is pipeline._latest_topic is retained
+    assert state.playback_generation == 9 and state.playback_scope is not None
+    assert state.segments is segments and len(state.segments) == 330
+    assert saved == [1]
+    if provider == "ollama":
+        assert restored == [(checkpoint, segments)]
+        assert state.analyzer_checkpoint is checkpoint
+    else:
+        assert restored == []
+
+
+@pytest.mark.parametrize("reason", ["corrupt", "model_changed", "missing"])
+def test_invalid_saved_model_context_rereads_all_raw_without_loss(tmp_path, monkeypatch, reason):
+    settings = Settings(cache_dir=str(tmp_path), semantic_provider="ollama", context_model="current-local")
+    segments = [TranscriptSegment(0, 400, "An earlier private recorded passage.")]
+    old_key = ("ollama", "other-local" if reason == "model_changed" else settings.context_model, "")
+    state = SessionState(segments=segments, provider_key=old_key, topic=Topic("Arctic camp", "Earlier context"),
+                         playback_scope=(True, frozenset({"arctic", "camp"}), frozenset()), playback_generation=7,
+                         analyzer_checkpoint=None if reason == "missing" else {"invalid": "private content"})
+    restored, events = [], []
+
+    class Analyzer:
+        def restore_checkpoint(self, value, recording):
+            restored.append(recording)
+            return False
+
+    monkeypatch.setattr("semantic_image_stream.engine.build_analyzer", lambda *args, **kwargs: Analyzer())
+    pipeline = Pipeline(settings, lambda kind, payload: events.append((kind, payload)), session_state=state)
+    pipeline._session_analyzer()
+    assert state.segments is segments and state.segments[0].end == 400
+    assert state.topic is pipeline._latest_topic is None
+    assert state.playback_scope is state.analyzer_checkpoint is None
+    assert state.playback_generation == 8
+    assert state.provider_key == ("ollama", "current-local", "")
+    assert len(restored) == (1 if reason == "corrupt" else 0)
+    assert any(kind == "status" and "complete retained transcript" in payload for kind, payload in events)
+    assert "private" not in str(events)
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_analysis_worker_checkpoints_partial_progress_even_when_model_fails(tmp_path, fails):
+    settings = Settings(cache_dir=str(tmp_path), semantic_provider="ollama")
+    checkpoint = {"cursor": 1, "accepted_state": {"summary": "Grounded story context"}}
+
+    class Analyzer:
+        def analyze(self, segments, stopped):
+            if fails:
+                raise RuntimeError("controlled inference failure")
+            return Topic("Arctic camp", "Story context")
+
+        def export_checkpoint(self):
+            return checkpoint
+
+    state = SessionState(analyzer=Analyzer(), provider_key=("ollama", settings.context_model, ""))
+    saved = []
+
+    def save(snapshot):
+        assert snapshot.analysis_lock.acquire(blocking=False), "Saving must not wait on model work"
+        snapshot.analysis_lock.release()
+        saved.append(snapshot.analyzer_checkpoint)
+
+    state.on_change = save
+    pipeline = Pipeline(settings, lambda *args: None, session_state=state)
+    if fails:
+        with pytest.raises(RuntimeError, match="controlled inference failure"):
+            pipeline._analyze_session(state.analyzer, [])
+    else:
+        assert pipeline._analyze_session(state.analyzer, []).query == "Arctic camp"
+    assert state.analyzer_checkpoint is checkpoint and saved == [checkpoint]
+    assert state.revision == 1
+
+
+@pytest.mark.parametrize("changed", ["analyzer", "key"])
+def test_old_analysis_worker_cannot_replace_new_interpreter_checkpoint(tmp_path, changed):
+    settings = Settings(cache_dir=str(tmp_path), semantic_provider="ollama")
+    retained = {"cursor": 0}
+    state = SessionState(provider_key=("ollama", settings.context_model, ""), analyzer_checkpoint=retained)
+
+    class OldAnalyzer:
+        def analyze(self, segments, stopped):
+            if changed == "analyzer":
+                state.analyzer = object()
+            else:
+                state.provider_key = ("ollama", "different-local", "")
+            return None
+
+        def export_checkpoint(self):
+            return {"cursor": 99}
+
+    old = state.analyzer = OldAnalyzer()
+    pipeline = Pipeline(settings, lambda *args: None, session_state=state)
+    pipeline._analyze_session(old, [])
+    assert state.analyzer_checkpoint is retained and state.revision == 0
+
+
+@pytest.mark.asyncio
+async def test_raw_transcript_saves_while_model_pending_and_callback_failure_is_nonfatal(tmp_path, caplog):
+    pending, release = threading.Event(), threading.Event()
+    settings = Settings(cache_dir=str(tmp_path))
+    state = SessionState()
+
+    class Analyzer:
+        def analyze(self, segments):
+            pending.set()
+            release.wait(timeout=3)
+            return None
+
+    class Transcriber:
+        def transcribe(self, chunk):
+            return [TranscriptSegment(0, 6, "The explorers camp beside Arctic sea ice.")]
+
+    pipeline = Pipeline(settings, lambda kind, value: pipeline.stop_event.set()
+                        if kind == "transcript" else None, session_state=state)
+    state.analyzer = Analyzer()
+    state.provider_key = (settings.semantic_provider, settings.context_model, "")
+    saved = []
+
+    def save(snapshot):
+        assert pending.is_set() and not release.is_set()
+        saved.append(list(snapshot.segments))
+        raise OSError("private transcript in disk error")
+
+    state.on_change = save
+    model = threading.Thread(target=pipeline._analyze_session, args=(state.analyzer, []))
+    model.start()
+    try:
+        assert pending.wait(1)
+        pipeline._transcriber = Transcriber()
+        pipeline.audio_queue = queue.Queue()
+        pipeline.audio_queue.put(AudioChunk(np.zeros(16000, dtype=np.float32), 0))
+        await asyncio.wait_for(pipeline._transcribe(), 1)
+        assert saved == [state.segments] and len(state.segments) == 1
+        assert state.revision == 1
+        assert "private transcript" not in caplog.text
+        assert model.is_alive(), "Accepted raw text must save before the model returns"
+    finally:
+        release.set()
+        model.join(timeout=1)
+    assert not model.is_alive()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result", ["transcript", "topic"])
+async def test_stop_and_final_flush_reject_result_waiting_to_accept_session_lock(tmp_path, result):
+    from semantic_image_stream.session_store import SessionStore
+
+    settings = Settings(cache_dir=str(tmp_path / "cache"), session_dir=str(tmp_path / "sessions"),
+                        semantic_interval=0.01)
+    recorded = TranscriptSegment(0, 6, "The explorers set up an Arctic camp.")
+    retained = Topic("Arctic camp", recorded.text, summary=recorded.text,
+                     scene="Arctic camp", visual_subjects=("Arctic camp",), context_used_segments=1)
+    state = SessionState(segments=[recorded], topic=retained, playback_generation=3)
+    store = SessionStore(settings)
+    store.bind(state)
+    store.flush(state)
+    events = []
+    pipeline = Pipeline(settings, lambda kind, value: events.append((kind, value)), session_state=state)
+
+    class CloseBeforeAcceptance:
+        armed = result == "transcript"
+
+        def __enter__(self):
+            if self.armed:
+                self.armed = False
+                # Deterministically place close after the outer stop check,
+                # before acceptance can acquire the real session-state lock.
+                pipeline.stop_event.set()
+                store.flush(state)
+                store.close()
+            return state.lock.__enter__()
+
+        def __exit__(self, *args):
+            return state.lock.__exit__(*args)
+
+    admission = CloseBeforeAcceptance()
+    pipeline._segments_lock = admission
+
+    class Transcriber:
+        def transcribe(self, chunk):
+            return [TranscriptSegment(6, 12, "A new unaccepted passage.")]
+
+    class Analyzer:
+        def analyze(self, segments):
+            admission.armed = True
+            return Topic("Arctic door", "New model result", scene="A wooden door on Arctic ice",
+                         visual_subjects=("wooden door", "Arctic ice"), context_used_segments=1)
+
+    try:
+        if result == "transcript":
+            pipeline._transcriber = Transcriber()
+            pipeline.audio_queue = queue.Queue()
+            pipeline.audio_queue.put(AudioChunk(np.zeros(16000, dtype=np.float32), 6))
+            await asyncio.wait_for(pipeline._transcribe(), 2)
+        else:
+            pipeline.topic_queue = asyncio.Queue(maxsize=1)
+            await asyncio.wait_for(pipeline._interpret(Analyzer()), 2)
+        assert pipeline.stop_event.is_set()
+        assert state.segments == [recorded]
+        assert state.topic is pipeline._latest_topic is retained
+        assert state.playback_generation == 3 and state.revision == 0
+        assert not any(kind == "transcript" or kind == "topic" or
+                       kind == "context" and value.get("phase") == "ready" for kind, value in events)
+        fresh = SessionStore(settings)
+        try:
+            saved = fresh.load()
+            assert saved.segments == state.segments
+            assert saved.topic.query == state.topic.query and saved.topic.scene == state.topic.scene
+        finally:
+            fresh.close()
+    finally:
+        store.close()
+
+
 @pytest.mark.asyncio
 async def test_unchanged_failed_context_waits_for_cooldown_instead_of_spinning(tmp_path):
     failed = asyncio.Event()

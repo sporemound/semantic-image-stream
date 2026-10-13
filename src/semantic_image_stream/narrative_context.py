@@ -27,6 +27,8 @@ MAX_BATCH_CHARS = 6000
 MAX_RESPONSE_BYTES = 262_144
 MAX_OUTPUT_BYTES = 8192
 MAX_OUTPUT_TOKENS = 768
+MAX_CHECKPOINT_BYTES = 16_384
+CHECKPOINT_VERSION = 1
 
 RESPONSE_SCHEMA = {
     "type": "object",
@@ -252,6 +254,112 @@ class LocalNarrativeAnalyzer:
     @property
     def context_used_segments(self):
         return self._cursor
+
+    @staticmethod
+    def _empty_state():
+        return {"summary": "", "current_scene": "", "visual_subjects": [],
+                "search_queries": [], "kind": "general", "evidence": []}
+
+    def _reset_interpretation(self):
+        self._cursor = self._offset = 0
+        self._history_snapshot = ()
+        self._state = self._empty_state()
+        self.summary_method = "local model"
+
+    def _checkpoint_context_key(self):
+        meaning = ["ollama", self.settings.context_model, self.settings.book_context]
+        encoded = json.dumps(meaning, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _checkpoint_digest(transcript, cursor, offset, state, method):
+        # Preserve segment boundaries, not merely a joined word sequence. The
+        # accepted fields are covered too, so changing a valid-looking summary
+        # or query cannot silently survive an accidentally corrupted checkpoint.
+        processed = {"segments": list(transcript[:cursor]),
+                     "partial_text": transcript[cursor][:offset] if offset else "",
+                     "accepted_state": state, "summary_method": method}
+        encoded = json.dumps(processed, ensure_ascii=False, allow_nan=False,
+                             sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def export_checkpoint(self) -> dict:
+        """Export only accepted JSON interpretation state; call on a worker."""
+        with self._lock:
+            state = {field: self._state[field] for field in RESPONSE_SCHEMA["required"]}
+            # Round-trip to detach nested lists from live state. Native clients,
+            # model/runtime objects, paths and generation budgets are excluded.
+            state = json.loads(json.dumps(state, ensure_ascii=False, allow_nan=False))
+            return {
+                "version": CHECKPOINT_VERSION,
+                "cursor": self._cursor,
+                "partial_offset": self._offset,
+                "processed_digest": self._checkpoint_digest(
+                    self._history_snapshot, self._cursor, self._offset, state, self.summary_method),
+                "context_key": self._checkpoint_context_key(),
+                "accepted_state": state,
+                "summary_method": self.summary_method,
+            }
+
+    def restore_checkpoint(self, checkpoint, segments: Sequence[TranscriptSegment]) -> bool:
+        """Restore compatible grounded state, or reset for a complete safe read.
+
+        The caller owns the full transcript. Invalid metadata never deletes or
+        edits it, advances a cursor, starts a service or invokes a model.
+        """
+        with self._lock:
+            try:
+                encoded = json.dumps(checkpoint, ensure_ascii=False, allow_nan=False).encode("utf-8")
+                if len(encoded) > MAX_CHECKPOINT_BYTES:
+                    raise ValueError("checkpoint size")
+                data = json.loads(encoded)
+                if not isinstance(data, dict) or set(data) != {
+                    "version", "cursor", "partial_offset", "processed_digest", "context_key",
+                    "accepted_state", "summary_method",
+                }:
+                    raise ValueError("checkpoint fields")
+                if type(data["version"]) is not int or data["version"] != CHECKPOINT_VERSION:
+                    raise ValueError("checkpoint version")
+                transcript = tuple(segment.text for segment in segments)
+                if any(not isinstance(text, str) for text in transcript):
+                    raise ValueError("transcript type")
+                cursor, offset = data["cursor"], data["partial_offset"]
+                if (type(cursor) is not int or type(offset) is not int or cursor < 0 or offset < 0
+                        or cursor > len(transcript) or (offset and (
+                            cursor == len(transcript) or offset >= len(transcript[cursor])))):
+                    raise ValueError("checkpoint cursor")
+                if data["context_key"] != self._checkpoint_context_key():
+                    raise ValueError("checkpoint interpretation key")
+                state, method = data["accepted_state"], data["summary_method"]
+                if not isinstance(state, dict) or set(state) != set(RESPONSE_SCHEMA["required"]):
+                    raise ValueError("checkpoint state")
+                if method not in {"local model", "model-selected recorded evidence"}:
+                    raise ValueError("checkpoint method")
+                expected = self._checkpoint_digest(transcript, cursor, offset, state, method)
+                if data["processed_digest"] != expected:
+                    raise ValueError("checkpoint digest")
+                processed = self._processed_text(transcript, cursor, offset)
+                if not processed.strip():
+                    if state != self._empty_state():
+                        raise ValueError("state without processed text")
+                else:
+                    processed_parts = list(transcript[:cursor])
+                    if offset:
+                        processed_parts.append(transcript[cursor][:offset])
+                    latest = next(text for text in reversed(processed_parts) if text.strip())
+                    checked = self._validate(state, self.settings.book_context + " " + processed, latest)
+                    checked.pop("_summary_method", None)
+                    if checked != state:
+                        raise ValueError("checkpoint requires grounding repair")
+                self._cursor, self._offset = cursor, offset
+                self._history_snapshot = transcript
+                self._state = state
+                self.summary_method = method
+                return True
+            except (AttributeError, KeyError, TypeError, ValueError, OverflowError, RecursionError,
+                    NarrativeContextError):
+                self._reset_interpretation()
+                return False
 
     def bind(self, stop_event, on_status=None):
         # The engine serializes shared session workers too. Never rebind an

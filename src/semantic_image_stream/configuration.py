@@ -33,6 +33,8 @@ class Settings:
     semantic_provider: str = "contextual"
     context_model: str = "qwen2.5:7b"
     book_context: str = ""
+    retain_context: bool = True
+    session_dir: str = ""
     context_cpu_threads: int = 6
     context_timeout: float = 180.0
     providers: list[str] = field(default_factory=lambda: ["wikimedia"])
@@ -106,6 +108,11 @@ class Settings:
             raise ValueError("context_model must name a local installed model")
         if not isinstance(self.book_context, str) or len(self.book_context) > 2000:
             raise ValueError("book_context must contain at most 2000 characters")
+        if not isinstance(self.retain_context, bool):
+            raise ValueError("retain_context must be true or false")
+        if (not isinstance(self.session_dir, str) or len(self.session_dir) > 4096
+                or any(character in self.session_dir for character in "\x00\r\n")):
+            raise ValueError("session_dir must name a local folder")
         if self.context_cpu_threads > 32:
             raise ValueError("context_cpu_threads must be at most 32")
         return self

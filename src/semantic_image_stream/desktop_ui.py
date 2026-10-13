@@ -6,9 +6,10 @@ from html import escape
 from pathlib import Path
 import sys
 import threading
+import weakref
 from urllib.parse import urlsplit
 
-from PySide6.QtCore import QObject, QSignalBlocker, Qt, QUrl, Signal
+from PySide6.QtCore import QObject, QSignalBlocker, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
 from .configuration import Settings
 from .models import ImageCandidate, Topic, TranscriptSegment
 from .presets import AUDIOBOOK_PRESETS, apply_audiobook_preset
+from .session_store import SessionStore, SessionStoreError
 from .slideshow import ImageCanvas, SlideshowController
 
 
@@ -70,6 +72,7 @@ def safe_source_url(value: str) -> QUrl | None:
 class EventRelay(QObject):
     pipeline_event = Signal(int, str, object)
     devices = Signal(int, object, str)
+    session_status = Signal(str)
 
 
 class MainWindow(QMainWindow):
@@ -79,6 +82,8 @@ class MainWindow(QMainWindow):
         self.config_path = Path(config_path) if config_path else None
         self.pipeline = None
         self._session_state = None
+        self._session_store = None
+        self._session_store_generation = 0
         self._session_book_context = settings.book_context.strip()
         self._transcript_segments: list[TranscriptSegment] = []
         self._context_payload: dict = {}
@@ -111,6 +116,7 @@ class MainWindow(QMainWindow):
         self.relay = EventRelay(self)
         self.relay.pipeline_event.connect(self._handle_event)
         self.relay.devices.connect(self._devices_ready)
+        self.relay.session_status.connect(self._show_session_status)
         self.slideshow = SlideshowController(settings.slideshow_interval, self)
         self._build_ui()
         self.slideshow.current_changed.connect(self._show_image)
@@ -118,6 +124,8 @@ class MainWindow(QMainWindow):
         self.slideshow.queue_changed.connect(self._update_queue_label)
         self.canvas.load_failed.connect(self._image_failed)
         self._apply_presentation()
+        if self.settings.retain_context:
+            self._prepare_session_store(restore=True)
         self._load_devices()
         for key, handler in (("F11", self.toggle_fullscreen), ("Escape", self.leave_fullscreen),
                              ("Space", self.toggle_pause), ("Right", self.next_image)):
@@ -300,6 +308,12 @@ class MainWindow(QMainWindow):
         self.book_context.setToolTip("Optional background for local interpretation. Changes re-read the retained transcript next time monitoring starts. New book clears recorded text.")
         self.form.addRow("Book or context", self.book_context)
         self.input_controls.extend([self.interpreter, self.context_model, self.book_context])
+        self.retain_context = QCheckBox("Keep context between launches")
+        self.retain_context.setChecked(self.settings.retain_context)
+        self.retain_context.setToolTip("Keep transcript and story context on this computer. Turning this off leaves any existing saved book until New book or Delete session history clears it. Audio is never saved.")
+        self.retain_context.toggled.connect(self._retention_changed)
+        self.form.addRow(self.retain_context)
+        self.input_controls.append(self.retain_context)
         self.ranking = QComboBox()
         self.ranking.addItem("Full context + image embeddings", "context_clip")
         self.ranking.addItem("Source metadata (basic)", "metadata")
@@ -353,10 +367,15 @@ class MainWindow(QMainWindow):
         self.context_status = QLabel("Waiting for recorded speech · context stays local.")
         self.context_status.setWordWrap(True)
         self.context_status.setObjectName("status")
+        self.session_status_label = QLabel("Local saving is ready." if self.settings.retain_context
+                                          else "Saving off · context stays in this open window.")
+        self.session_status_label.setWordWrap(True)
+        self.session_status_label.setObjectName("status")
         self.context_text = QTextEdit()
         self.context_text.setReadOnly(True)
         self.context_text.setPlaceholderText("The local interpreter's narrative summary, current scene, and visual subjects appear here.")
         context_layout.addWidget(self.context_status)
+        context_layout.addWidget(self.session_status_label)
         context_layout.addWidget(self.context_text, 1)
         self.image_history = QListWidget()
         self.image_history.itemClicked.connect(self._select_history)
@@ -431,6 +450,7 @@ class MainWindow(QMainWindow):
             "whisper_device": self.whisper_device.currentData(), "ranking": self.ranking.currentData(),
             "semantic_provider": self.interpreter.currentData(), "context_model": self.context_model.text().strip(),
             "book_context": self.book_context.text().strip(),
+            "retain_context": self.retain_context.isChecked(),
             "providers": [name for name, check in self.provider_boxes.items() if check.isChecked()],
             "slideshow_interval": self.interval.value(), "semantic_sensitivity": self.sensitivity.value(),
             "relevance_threshold": self.threshold.value(), "semantic_interval": self.semantic_interval.value(),
@@ -478,6 +498,93 @@ class MainWindow(QMainWindow):
             self.context_model.setEnabled(not (self._monitoring or self._stopping)
                                           and self.interpreter.currentData() == "ollama")
 
+    def _store_status_callback(self):
+        generation = self._session_store_generation
+        reference = weakref.ref(self)
+
+        def callback(message):
+            window = reference()
+            if window is None or window._closing or generation != window._session_store_generation:
+                return
+            try:
+                window.relay.session_status.emit(f"{generation}:{message}")
+            except RuntimeError:
+                pass
+        return callback
+
+    @Slot(str)
+    def _show_session_status(self, value: str) -> None:
+        if self._closing:
+            return
+        prefix, separator, message = str(value).partition(":")
+        if separator and prefix.isdecimal():
+            if int(prefix) != self._session_store_generation:
+                return
+        else:
+            message = str(value)
+        self.session_status_label.setText(message)
+        self.session_status_label.setToolTip(message)
+
+    def _prepare_session_store(self, restore: bool = False) -> None:
+        if self._session_store is None:
+            self._session_store = SessionStore(self.settings, on_status=self._store_status_callback())
+            try:
+                saved = self._session_store.load()
+            except SessionStoreError as exc:
+                self._show_session_status(str(exc))
+                return
+            if restore and saved is not None:
+                self._session_state = saved
+                self.settings.book_context = saved.book_context
+                self.book_context.setText(saved.book_context)
+                self._session_book_context = saved.book_context.strip()
+                self._show_transcript(list(saved.segments))
+                if saved.topic is not None:
+                    self._handle_event(self._session, "topic", saved.topic)
+                self._context_frozen = True
+                self._retrieval_message = "Images: saved book loaded. Start monitoring to resume."
+                self._refresh_image_status()
+                self._show_session_status(f"Last book restored locally · {len(saved.segments)} recorded passages")
+        self._session_store.on_status = self._store_status_callback()
+        if self._session_state is not None:
+            self._session_store.bind(self._session_state)
+
+    def _retention_changed(self, enabled: bool) -> None:
+        if self._monitoring or self._stopping:
+            return
+        self.settings.retain_context = bool(enabled)
+        self._session_store_generation += 1
+        if enabled:
+            self._prepare_session_store(restore=self._session_state is None)
+            if self._session_state is not None:
+                try:
+                    self._save_story_metadata()
+                except SessionStoreError as exc:
+                    self._show_session_status(str(exc))
+        else:
+            if self._session_store is not None:
+                self._session_store.detach()
+            self._show_session_status("Saving off · context stays in this open window. Existing saved data remains until explicitly cleared.")
+
+    def _save_story_metadata(self, flush: bool = False) -> None:
+        if not self.retain_context.isChecked() or self._session_state is None:
+            return
+        self._prepare_session_store()
+        with self._session_state.lock:
+            self._session_state.book_context = self.book_context.text().strip()
+        if flush:
+            self._session_store.flush(self._session_state)
+        else:
+            self._session_store.save(self._session_state)
+
+    def _clear_saved_story(self) -> None:
+        self._session_store_generation += 1
+        if self._session_store is None:
+            self._session_store = SessionStore(self.settings, on_status=self._store_status_callback())
+        self._session_store.on_status = self._store_status_callback()
+        self._session_store.clear()
+        self._show_session_status("Saved book cleared locally.")
+
     def _reset_context(self, book_context: str = "") -> None:
         """Start a new in-memory book without letting old workers update its panels."""
         self._session += 1
@@ -503,6 +610,11 @@ class MainWindow(QMainWindow):
 
     def new_book(self) -> None:
         if self._monitoring or self._stopping:
+            return
+        try:
+            self._clear_saved_story()
+        except SessionStoreError as exc:
+            self._show_session_status(str(exc))
             return
         self.book_context.clear()
         self.settings.book_context = ""
@@ -547,6 +659,7 @@ class MainWindow(QMainWindow):
                 pass  # The user may close the window while discovery completes.
         threading.Thread(target=work, daemon=True, name="audio-device-discovery").start()
 
+    @Slot(int, object, str)
     def _devices_ready(self, token: int, payload, error: str) -> None:
         if token != self._device_request or self._closing:
             return
@@ -615,6 +728,10 @@ class MainWindow(QMainWindow):
             self._session_book_context = self.settings.book_context
             if self._session_state is None:
                 self._session_state = SessionState()
+            with self._session_state.lock:
+                self._session_state.book_context = self.settings.book_context
+            if self.retain_context.isChecked():
+                self._prepare_session_store()
             self._session += 1
             token = self._session
 
@@ -655,6 +772,10 @@ class MainWindow(QMainWindow):
             self._update_controls()
             self.status_label.setText("Stopping monitoring…")
             self.pipeline.stop()
+            try:
+                self._save_story_metadata(flush=True)
+            except SessionStoreError as exc:
+                self._show_session_status(str(exc))
 
     def _update_controls(self) -> None:
         active = self._monitoring or self._stopping
@@ -675,6 +796,7 @@ class MainWindow(QMainWindow):
             self.audio_device.setEnabled(not is_file and not self._devices_loading)
             self.refresh_devices.setEnabled(not is_file)
 
+    @Slot(int, str, object)
     def _handle_event(self, session: int, kind: str, payload) -> None:
         if session != self._session or self._closing:
             return
@@ -959,6 +1081,7 @@ class MainWindow(QMainWindow):
             self.config_path = destination
             if not self._monitoring:
                 self.settings = settings
+            self._save_story_metadata()
             self.status_label.setText(f"Settings saved to {destination}")
         except Exception as exc:
             self._error(f"Could not save settings: {exc}")
@@ -981,6 +1104,9 @@ class MainWindow(QMainWindow):
 
     def clear_history(self) -> None:
         try:
+            if self._monitoring or self._stopping:
+                raise RuntimeError("Stop monitoring before deleting stored data.")
+            self._clear_saved_story()
             self._maintenance_pipeline().clear_history()
             self._reset_context(self.book_context.text().strip())
             self.status_label.setText("Stored session history deleted")
@@ -1044,12 +1170,30 @@ class MainWindow(QMainWindow):
         self.fullscreen_button.setText("Fullscreen")
 
     def closeEvent(self, event) -> None:
+        if self._closing:
+            event.accept()
+            return
+        if self.pipeline and self._monitoring and not self._stopping:
+            self.stop_monitoring()
+        try:
+            self._save_story_metadata(flush=True)
+        except SessionStoreError as exc:
+            self._show_session_status(f"{exc} The window remains open so the transcript is retained.")
+            if self._fullscreen:
+                self.leave_fullscreen()
+            self.tabs.setCurrentWidget(self.context_panel)
+            event.ignore()
+            return
         self._closing = True
+        self._session_store_generation += 1
         self._device_request += 1
         self.slideshow.timer.stop()
         self.canvas.animation_timer.stop()
         if self.pipeline:
             self.pipeline.stop()
+        if self._session_store is not None:
+            self._session_store.on_status = lambda message: None
+            self._session_store.close()
         event.accept()
 
 

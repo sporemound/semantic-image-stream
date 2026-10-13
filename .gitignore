@@ -8,6 +8,9 @@ build/
 dist/
 *.spec
 config.local.toml
+last-session.json
+.session-*.tmp
+sessions/
 cache/
 validation-output/
 work/

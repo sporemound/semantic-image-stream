@@ -106,6 +106,14 @@ The installed DDGS 9.16.0 image engine added `Connection: keep-alive` to its nat
 
 The app now normalizes only its owned DDGS image clients before discovery, retaining timeout, verification, browser identity and the explicit DuckDuckGo backend. DDGS is constrained to the tested 9.16 minor series because this narrow adapter uses its engine-selection extension point. Combined DuckDuckGo query-cache keys carry a revision so previously cached partial results do not suppress the corrected source; image files, history and other-provider query keys are preserved. Actual-library request fixtures cover both token and image-result requests, and cache regressions verify one refresh followed by normal reuse. All 315 local regression checks and lint passed for this update.
 
+## Local story memory between launches
+
+Automatic retention saves the full recognized transcript, book background, compact accepted Topic and local interpreter progress in an atomic JSON record separate from image caches. It restores the last story at launch with audio stopped. Matching checkpoints resume only unfinished/new text; changing interpretation settings or rejecting damaged progress retains every raw segment and re-reads it. The saving control can disable future persistence, and explicit New book/Delete session history clears the saved story. No raw audio or native model objects are stored.
+
+A combined real-store/engine/analyzer test saves and reloads 360 passages, preserves accepted context, makes zero inference or local-service requests for unchanged recorded text, and sends only passage 361 to substituted local inference after append. Partial-segment tests resume the exact remaining characters. Actual Qt widget tests restore 350 passages while retaining capture/model/provider/relevance settings; Stop/Close flush, Clear cache preserves context, and failed closing keeps the window open. Saving-status receivers are registered Qt slots, and thread checks confirm updates execute on the GUI thread.
+
+Concurrent boundary checks prove late workers cannot recreate a deleted book, Stop cannot accept raw/topic updates after a final save wins the session lock, an obsolete write failure cannot fail a newer final flush, and failed atomic replacement preserves the previous complete file. Corrupt records remain untouched until an explicit clear; invalid derived metadata does not delete intact raw text. All GUI/test stores use isolated temporary folders; no real user story, model or provider request was used. All 379 local regression checks and lint passed for this feature.
+
 ## Next milestones
 
 1. Benchmark real recordings and noisy live speech; add multilingual semantic analyzers and better relationship/negation handling.

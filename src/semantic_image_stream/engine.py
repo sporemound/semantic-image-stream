@@ -10,6 +10,8 @@ import re
 import shutil
 import threading
 import time
+from typing import Callable
+from uuid import uuid4
 
 from .cache import Cache
 from .image_ranking import build_ranker, is_duplicate
@@ -22,7 +24,7 @@ GPU_LOCK = threading.Lock()
 
 @dataclass
 class SessionState:
-    """In-memory story context shared by successive monitoring runs."""
+    """Story data shared by monitoring runs, with optional local-save callbacks."""
     segments: list = field(default_factory=list)
     lock: threading.RLock = field(default_factory=threading.RLock)
     analysis_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -31,6 +33,23 @@ class SessionState:
     topic: object | None = None
     playback_scope: tuple | None = None
     playback_generation: int = 0
+    session_id: str = field(default_factory=lambda: uuid4().hex)
+    revision: int = 0
+    book_context: str = ""
+    analyzer_checkpoint: dict | None = None
+    on_change: Callable[["SessionState"], None] | None = None
+
+    def notify_changed(self):
+        with self.lock:
+            self.revision += 1
+            callback = self.on_change
+        if callback:
+            try:
+                callback(self)
+            except Exception as exc:
+                # Persistence is optional; disk/callback failure cannot stop
+                # capture or expose recorded text through exception messages.
+                log.warning("Local session update failed (%s)", type(exc).__name__)
 
 
 PipelineSessionState = SessionState
@@ -242,8 +261,13 @@ class Pipeline:
                 break
             if segments:
                 with self._segments_lock:
+                    # Stop/close can win after inference's outer check. A final
+                    # flush takes this same lock, so no later append escapes it.
+                    if self.stop_event.is_set():
+                        break
                     self._segments.extend(segments)
                     window = list(self._segments)
+                self.session_state.notify_changed()
                 self.emit("transcript", window)
                 self.emit("status", "Spoken context updated · listening")
             else:
@@ -283,12 +307,16 @@ class Pipeline:
                     failed_count = -1
                     if topic:
                         topic = replace(topic, transcript=tuple(segment.text for segment in window))
-                        playback_changed = self._update_playback_scope(topic)
-                        changed = gate.changed(topic) or playback_changed
-                        # Every successful context update affects in-flight
-                        # ranking, even if its compact search query is stable.
-                        self._latest_topic = topic
-                        self.session_state.topic = topic
+                        with self._segments_lock:
+                            if self.stop_event.is_set():
+                                break
+                            playback_changed = self._update_playback_scope(topic)
+                            changed = gate.changed(topic) or playback_changed
+                            # Every successful context update affects in-flight
+                            # ranking, even if its compact search query is stable.
+                            self._latest_topic = topic
+                            self.session_state.topic = topic
+                        self.session_state.notify_changed()
                         self._sync_image_pool(topic)
                         signature = self._fill_signature(topic)
                         refill = (bool(topic.query) and len(self._approved_images) < self.settings.prefetch_count
@@ -314,19 +342,56 @@ class Pipeline:
     def _session_analyzer(self):
         key = (self.settings.semantic_provider, getattr(self.settings, "context_model", ""),
                getattr(self.settings, "book_context", ""))
-        with self._segments_lock:
-            if self.session_state.analyzer is None or self.session_state.provider_key != key:
-                if self.session_state.provider_key and self.session_state.provider_key != key:
-                    self.session_state.playback_generation += 1
-                self.session_state.topic = None
-                self._latest_topic = None
-                self.session_state.playback_scope = None
-                self.session_state.provider_key = key
-                self.session_state.analyzer = None
-                self.session_state.analyzer = build_analyzer(
+        changed, reread = False, False
+        try:
+            with self._segments_lock:
+                state = self.session_state
+                matching = state.provider_key == key
+                if state.book_context != self.settings.book_context:
+                    state.book_context = self.settings.book_context
+                    changed = True
+                if state.analyzer is not None and matching:
+                    return state.analyzer
+                checkpoint = state.analyzer_checkpoint if matching else None
+                if not matching:
+                    reread = bool(state.provider_key and state.segments)
+                    if state.provider_key:
+                        state.playback_generation += 1
+                    state.topic = None
+                    self._latest_topic = None
+                    state.playback_scope = None
+                    state.analyzer_checkpoint = None
+                state.provider_key = key
+                state.analyzer = None
+                changed = True
+                analyzer = build_analyzer(
                     self.settings, stop_event=self.stop_event,
                     on_status=lambda message: self._emit_context("updating", message))
-            return self.session_state.analyzer
+                if matching and self.settings.semantic_provider == "ollama":
+                    restore = getattr(analyzer, "restore_checkpoint", None)
+                    restored = False
+                    if checkpoint is not None and restore:
+                        try:
+                            restored = restore(checkpoint, list(state.segments)) is True
+                        except Exception as exc:
+                            log.warning("Local story checkpoint restore failed (%s)", type(exc).__name__)
+                    if not restored:
+                        # A rejected checkpoint is derived data only: the full
+                        # recorded transcript remains available for re-reading.
+                        reread = bool(state.segments)
+                        if state.topic is not None or state.playback_scope is not None:
+                            state.playback_generation += 1
+                        state.topic = None
+                        state.playback_scope = None
+                        state.analyzer_checkpoint = None
+                state.analyzer = analyzer
+                self._latest_topic = state.topic
+                return analyzer
+        finally:
+            if changed:
+                self.session_state.notify_changed()
+            if reread:
+                self.emit("status", "Re-reading the complete retained transcript with the selected local interpreter.")
 
     def _analyze_session(self, analyzer, segments):
         # Native/local HTTP work can briefly outlive a cancelled asyncio task.
@@ -336,6 +401,9 @@ class Pipeline:
                 break
         else:
             return None
+        checkpoint_changed = False
+        key = (self.settings.semantic_provider, getattr(self.settings, "context_model", ""),
+               getattr(self.settings, "book_context", ""))
         try:
             if self.stop_event.is_set():
                 return None
@@ -346,7 +414,22 @@ class Pipeline:
                 return analyzer.analyze(segments, self.stop_event)
             return analyzer.analyze(segments)
         finally:
-            self.session_state.analysis_lock.release()
+            try:
+                export = getattr(analyzer, "export_checkpoint", None)
+                if export:
+                    try:
+                        checkpoint = export()
+                    except Exception as exc:
+                        log.warning("Local story checkpoint export failed (%s)", type(exc).__name__)
+                    else:
+                        with self._segments_lock:
+                            if self.session_state.analyzer is analyzer and self.session_state.provider_key == key:
+                                self.session_state.analyzer_checkpoint = checkpoint
+                                checkpoint_changed = True
+            finally:
+                self.session_state.analysis_lock.release()
+            if checkpoint_changed:
+                self.session_state.notify_changed()
 
     def _report_context_failure(self, error):
         from .narrative_context import NarrativeContextError

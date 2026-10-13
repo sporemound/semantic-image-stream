@@ -21,7 +21,9 @@ semantic_sensitivity = 0.45
 relevance_threshold = 0.30
 semantic_provider = "ollama" # full session; contextual/spacy are basic alternatives
 context_model = "qwen2.5:7b" # complete cached local GGUF model; no cloud models
-book_context = "" # optional title/setting/background; changing it starts a new session
+book_context = "" # optional title/setting/background; edits re-read retained text
+retain_context = true # automatically save and restore the last local story
+session_dir = "" # blank = %LOCALAPPDATA%/SemanticImageStream/sessions on Windows
 context_cpu_threads = 6
 context_timeout = 180.0
 providers = ["wikimedia"] # priority order; duckduckgo, openverse, archive also available

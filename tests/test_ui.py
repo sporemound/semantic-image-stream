@@ -12,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 
 pytest.importorskip("PySide6")
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QColor, QDesktopServices, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFileDialog
@@ -24,6 +24,13 @@ from semantic_image_stream.presets import AUDIOBOOK_PRESETS
 from semantic_image_stream.slideshow import ImageCanvas, SlideshowController
 from semantic_image_stream.audio_capture import AudioDevice
 import semantic_image_stream.desktop_ui as desktop_ui
+import semantic_image_stream.session_store as session_store
+
+
+@pytest.fixture(autouse=True)
+def local_session_storage(monkeypatch, tmp_path):
+    """No GUI test can read or write a real user's saved story."""
+    monkeypatch.setattr(session_store, "default_session_dir", lambda: tmp_path / "sessions")
 
 
 @pytest.fixture(scope="module")
@@ -55,6 +62,8 @@ def window(app, monkeypatch, tmp_path):
     app.processEvents()
     yield widget
     widget.close()
+    widget.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     app.processEvents()
 
 
@@ -363,6 +372,8 @@ def delayed_devices_window(app, monkeypatch, tmp_path):
     assert len(workers) == 1
     yield widget, pipelines, workers
     widget.close()
+    widget.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     app.processEvents()
 
 
@@ -1103,6 +1114,223 @@ def test_real_pipeline_stop_button_and_restart_preserve_the_full_session(tmp_pat
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
 
 
+def test_saved_book_restores_all_visible_context_without_starting_audio_or_changing_settings(app, monkeypatch, tmp_path):
+    from semantic_image_stream.engine import SessionState
+
+    settings = Settings(cache_dir=str(tmp_path / "images"), audio_mode="microphone", audio_device=77,
+                        whisper_model="turbo", whisper_device="cpu", providers=["archive"], relevance_threshold=.18,
+                        ranking="context_clip", context_model="qwen2.5:14b", slideshow_interval=12,
+                        book_context="Current configuration background")
+    state = SessionState(book_context="Saved space book", provider_key=("ollama", "qwen2.5:7b", "Saved space book"))
+    state.segments = [TranscriptSegment(index * 6, index * 6 + 5, f"Recorded passage {index}.") for index in range(350)]
+    state.topic = Topic("satellite orbit", "full context", summary="A satellite is in orbit.",
+                        scene="Earth viewed from orbit.", visual_subjects=("satellite in orbit",), context_used_segments=350)
+    store = session_store.SessionStore(settings)
+    store.bind(state)
+    store.flush(state)
+    store.close()
+    monkeypatch.setattr(MainWindow, "_load_devices", lambda *args: None)
+    restored = MainWindow(settings)
+    try:
+        assert restored.pipeline is None and not restored._monitoring
+        assert restored.transcript.document().blockCount() == 350
+        assert "Recorded passage 0." in restored.transcript.toPlainText()
+        assert "Recorded passage 349." in restored.transcript.toPlainText()
+        assert restored.current_topic == "satellite orbit"
+        assert "A satellite is in orbit." in restored.context_text.toPlainText()
+        assert "Earth viewed from orbit." in restored.context_text.toPlainText()
+        assert restored.book_context.text() == restored.settings.book_context == "Saved space book"
+        assert restored.settings.audio_mode == "microphone" and restored.settings.audio_device == 77
+        assert restored.model.currentText() == "turbo" and restored.whisper_device.currentData() == "cpu"
+        assert restored.ranking.currentData() == "context_clip" and restored.threshold.value() == .18
+        assert restored.interval.value() == 12
+        assert [key for key, check in restored.provider_boxes.items() if check.isChecked()] == ["archive"]
+        assert restored.context_model.text() == "qwen2.5:14b"
+        assert "Last book restored locally" in restored.session_status_label.text()
+        assert "Start monitoring to resume" in restored.image_status_label.text()
+    finally:
+        restored.close()
+        restored.deleteLater()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+
+
+def test_stop_close_and_fresh_window_keep_saved_story(window, app, recording_context_pipeline):
+    window.start_monitoring()
+    pipeline = recording_context_pipeline[-1]
+    state = pipeline.session_state
+    state.segments.append(TranscriptSegment(0, 5, "The spacecraft entered orbit."))
+    state.topic = Topic("spacecraft orbit", state.segments[0].text, summary="The spacecraft is in orbit.",
+                        scene="A spacecraft above Earth.", visual_subjects=("spacecraft above Earth",), context_used_segments=1)
+    state.notify_changed()
+    pipeline.callback("transcript", list(state.segments))
+    pipeline.callback("topic", state.topic)
+    window.stop_monitoring()
+    saved_path = window._session_store.path
+    assert saved_path.is_file()
+    settings = window.settings
+    window.close()
+    fresh = MainWindow(settings)
+    try:
+        assert fresh.pipeline is None and fresh._session_state.session_id == state.session_id
+        assert fresh._session_state.segments == state.segments
+        assert "The spacecraft entered orbit." in fresh.transcript.toPlainText()
+        assert "The spacecraft is in orbit." in fresh.context_text.toPlainText()
+    finally:
+        fresh.close()
+        fresh.deleteLater()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+
+
+def test_disabling_retention_preserves_saved_file_and_reenable_reuses_store(window, recording_context_pipeline):
+    window.start_monitoring()
+    pipeline = recording_context_pipeline[-1]
+    pipeline.session_state.segments.append(TranscriptSegment(0, 5, "A recorded book passage."))
+    pipeline.callback("transcript", list(pipeline.session_state.segments))
+    window.stop_monitoring()
+    store = window._session_store
+    original = store.path.read_bytes()
+    window.retain_context.setChecked(False)
+    assert store.path.read_bytes() == original
+    assert pipeline.session_state.on_change is None
+    pipeline.session_state.segments.append(TranscriptSegment(6, 11, "More context held only in memory."))
+    pipeline.session_state.notify_changed()
+    assert store.path.read_bytes() == original
+    window.retain_context.setChecked(True)
+    assert window._session_store is store
+    window._save_story_metadata(flush=True)
+    assert len(store.load().segments) == 2
+
+
+@pytest.mark.parametrize("action", ["new_book", "clear_history"])
+def test_explicit_context_clear_removes_saved_book_before_panels(window, recording_context_pipeline, action):
+    window.start_monitoring()
+    pipeline = recording_context_pipeline[-1]
+    pipeline.session_state.segments.append(TranscriptSegment(0, 5, "Locally recorded story."))
+    pipeline.callback("transcript", list(pipeline.session_state.segments))
+    window.stop_monitoring()
+    saved_path = window._session_store.path
+    assert saved_path.is_file()
+    getattr(window, action)()
+    assert not saved_path.exists()
+    assert window._session_state is None and not window.transcript.toPlainText()
+
+
+def test_context_clear_failure_keeps_visible_story(window, recording_context_pipeline, monkeypatch):
+    window.start_monitoring()
+    pipeline = recording_context_pipeline[-1]
+    pipeline.session_state.segments.append(TranscriptSegment(0, 5, "Context that must remain visible."))
+    pipeline.callback("transcript", list(pipeline.session_state.segments))
+    window.stop_monitoring()
+    state, text = window._session_state, window.transcript.toPlainText()
+
+    def fail_delete():
+        raise session_store.SessionStoreError("Saved context could not be deleted.")
+
+    monkeypatch.setattr(window._session_store, "clear", fail_delete)
+    window.new_book()
+    assert window._session_state is state and window.transcript.toPlainText() == text
+    assert "could not be deleted" in window.session_status_label.text()
+
+
+def test_image_cache_clear_keeps_saved_story(window, recording_context_pipeline):
+    window.start_monitoring()
+    pipeline = recording_context_pipeline[-1]
+    pipeline.session_state.segments.append(TranscriptSegment(0, 5, "Saved book context."))
+    pipeline.callback("transcript", list(pipeline.session_state.segments))
+    window.stop_monitoring()
+    saved_path = window._session_store.path
+    before = saved_path.read_bytes()
+    pipeline.clear_cache = lambda: None
+    window.clear_cache()
+    assert saved_path.read_bytes() == before
+    assert "Saved book context." in window.transcript.toPlainText()
+
+
+def test_close_save_failure_keeps_window_and_context_open(window, recording_context_pipeline, monkeypatch):
+    window.start_monitoring()
+    pipeline = recording_context_pipeline[-1]
+    pipeline.session_state.segments.append(TranscriptSegment(0, 5, "Unsaved local context."))
+    pipeline.callback("transcript", list(pipeline.session_state.segments))
+    window.stop_monitoring()
+
+    def fail_save(*args, **kwargs):
+        raise session_store.SessionStoreError("Could not save context locally.")
+
+    original = window._session_store.flush
+    monkeypatch.setattr(window._session_store, "flush", fail_save)
+    assert window.close() is False
+    assert not window._closing and window.isVisible()
+    assert "Unsaved local context." in window.transcript.toPlainText()
+    assert "window remains open" in window.session_status_label.text()
+    assert window.tabs.currentWidget() is window.context_panel
+    monkeypatch.setattr(window._session_store, "flush", original)
+
+
+def test_saved_file_is_not_read_when_retention_is_off_and_first_enable_validates_it(app, monkeypatch, tmp_path):
+    from semantic_image_stream.engine import SessionState
+
+    settings = Settings(cache_dir=str(tmp_path / "cache"), retain_context=False)
+    store = session_store.SessionStore(settings)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.path.write_bytes(b"invalid saved data")
+    monkeypatch.setattr(MainWindow, "_load_devices", lambda *args: None)
+    widget = MainWindow(settings)
+    try:
+        assert widget._session_store is None and not widget.transcript.toPlainText()
+        widget._session_state = SessionState(segments=[TranscriptSegment(0, 5, "Current in-memory story.")])
+        widget._show_transcript(list(widget._session_state.segments))
+        widget.retain_context.setChecked(True)
+        assert widget.transcript.toPlainText().endswith("Current in-memory story.")
+        assert store.path.read_bytes() == b"invalid saved data"
+        assert "untouched" in widget.session_status_label.text()
+        widget.retain_context.setChecked(False)
+        widget.retain_context.setChecked(True)
+        assert store.path.read_bytes() == b"invalid saved data"
+        widget.new_book()
+        assert not store.path.exists() and widget._session_state is None
+    finally:
+        widget.close()
+        widget.deleteLater()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+        store.close()
+
+
+def test_background_save_status_runs_on_gui_thread_and_stale_status_is_ignored(window, app):
+    import threading
+
+    gui_thread = threading.get_ident()
+    observed = []
+    original = window.session_status_label.setText
+    window.session_status_label.setText = lambda text: (observed.append(threading.get_ident()), original(text))
+    callback = window._store_status_callback()
+    worker = threading.Thread(target=callback, args=("Saved book from worker.",))
+    worker.start()
+    worker.join()
+    assert not observed
+    app.processEvents()
+    assert observed == [gui_thread]
+    assert window.session_status_label.text() == "Saved book from worker."
+    old_generation = window._session_store_generation
+    window.retain_context.setChecked(False)
+    current = window.session_status_label.text()
+    window.relay.session_status.emit(f"{old_generation}:Old saved-book message.")
+    assert window.session_status_label.text() == current
+
+
+def test_retention_choice_persists_and_is_locked_during_monitoring(window, recording_context_pipeline, tmp_path):
+    window.config_path = tmp_path / "retention.toml"
+    window.retain_context.setChecked(False)
+    window.save_settings()
+    assert Settings.load(window.config_path).retain_context is False
+    window.start_monitoring()
+    assert not window.retain_context.isEnabled()
+    window.stop_monitoring()
+    assert window.retain_context.isEnabled()
+
+
 def _exercise_pipeline_stop_start(cache_dir):
     """Fresh-process actual Pipeline/Qt check with external boundaries replaced."""
     import numpy as np
@@ -1169,7 +1397,8 @@ def _exercise_pipeline_stop_start(cache_dir):
     monkeypatch.setattr(search_providers, "build_providers", lambda settings: [])
     monkeypatch.setattr(image_download, "ImageDownloader", NoImageDownloader)
     monkeypatch.setattr(MainWindow, "_load_devices", lambda *args: None)
-    window = MainWindow(Settings(cache_dir=str(cache_dir), semantic_interval=1))
+    window = MainWindow(Settings(cache_dir=str(cache_dir), session_dir=str(Path(cache_dir) / "sessions"),
+                                 semantic_interval=1))
     window.show()
     app.processEvents()
 

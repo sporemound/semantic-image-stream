@@ -61,9 +61,18 @@ def test_settings_roundtrip_and_validation(tmp_path):
     assert Settings.load(path) == original
     for field, value in [("chunk_seconds", 100), ("audio_queue_size", -1), ("ranking", "invented"),
                          ("relevance_threshold", 1.1), ("providers", []), ("min_aspect_ratio", -1),
-                         ("semantic_interval", float("nan"))]:
+                         ("semantic_interval", float("nan")), ("retain_context", "true"),
+                         ("session_dir", "invalid\x00folder")]:
         with pytest.raises(ValueError):
             replace(original, **{field: value}).validate()
+
+
+def test_local_context_preferences_roundtrip_without_changing_audio_or_sources(tmp_path):
+    original = Settings(retain_context=False, session_dir=str(tmp_path / "saved-story"), audio_device=151,
+                        relevance_threshold=0.05, slideshow_interval=6, providers=["wikimedia", "duckduckgo", "archive"])
+    path = tmp_path / "context-settings.toml"
+    original.save(path)
+    assert Settings.load(path) == original
 
 
 def test_metadata_ranker_rejects_unrelated_and_duplicates():

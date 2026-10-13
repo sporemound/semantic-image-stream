@@ -7,8 +7,11 @@ import httpx
 import pytest
 
 from semantic_image_stream import narrative_context as narrative
+from semantic_image_stream.configuration import Settings
+from semantic_image_stream.engine import Pipeline, SessionState
 from semantic_image_stream.models import Topic, TranscriptSegment
 from semantic_image_stream.semantic_analysis import build_analyzer, fallback_queries
+from semantic_image_stream.session_store import SessionStore
 
 
 def settings(**changes):
@@ -588,3 +591,228 @@ def test_complete_json_at_generation_limit_is_still_a_valid_response(monkeypatch
     assert topic.context_used_segments == 1
     assert len(prompts) == 1
     assert analyzer._output_tokens == 384
+
+
+def test_checkpoint_roundtrip_resumes_all_history_without_old_model_calls(monkeypatch):
+    original = narrative.LocalNarrativeAnalyzer(settings())
+    install_local_model(monkeypatch, original)
+    recording = segments(360)
+    original_topic = original.analyze(recording)
+    checkpoint = json.loads(json.dumps(original.export_checkpoint()))
+    assert set(checkpoint) == {"version", "cursor", "partial_offset", "processed_digest", "context_key",
+                              "accepted_state", "summary_method"}
+    assert len(json.dumps(checkpoint).encode()) < narrative.MAX_CHECKPOINT_BYTES
+    assert "transcript" not in checkpoint and "segments" not in checkpoint
+    assert set(checkpoint["accepted_state"]) == set(narrative.RESPONSE_SCHEMA["required"])
+    resumed = narrative.LocalNarrativeAnalyzer(settings())
+    prompts, requests = install_local_model(monkeypatch, resumed)
+    assert resumed.restore_checkpoint(checkpoint, recording)
+    topic = resumed.analyze(recording)
+    assert topic == original_topic
+    assert prompts == requests == []
+    topic = resumed.analyze(segments(361))
+    assert topic.context_used_segments == 361
+    assert len(prompts) == 1
+    assert prompts[0]["new_transcript"] == segments(361)[-1].text
+    assert prompts[0]["established_context"]["summary"] == original_topic.summary
+
+
+def test_saved_session_restores_real_analyzer_through_pipeline_without_rereading(monkeypatch, tmp_path):
+    config = Settings(semantic_provider="ollama", context_model="qwen2.5:7b",
+                      book_context="A voyage aboard a wooden ship through pack ice.",
+                      cache_dir=str(tmp_path / "image-cache"), session_dir=str(tmp_path / "story-memory"))
+    built = []
+
+    def local_factory(config, **kwargs):
+        analyzer = narrative.LocalNarrativeAnalyzer(config, **kwargs)
+        prompts, requests = install_local_model(monkeypatch, analyzer)
+        built.append((analyzer, prompts, requests))
+        return analyzer
+
+    monkeypatch.setattr("semantic_image_stream.engine.build_analyzer", local_factory)
+    recording = segments(360)
+    state = SessionState(segments=list(recording))
+    store = SessionStore(config)
+    try:
+        store.bind(state)
+        pipeline = Pipeline(config, lambda *args: None, session_state=state)
+        original = pipeline._session_analyzer()
+        state.topic = pipeline._analyze_session(original, recording)
+        original_topic = state.topic
+        assert original_topic.context_used_segments == 360
+        assert state.analyzer_checkpoint == original.export_checkpoint()
+        state.notify_changed()
+        store.flush(state)
+        stored = json.loads(store.path.read_text(encoding="utf-8"))
+        assert len(stored["segments"]) == 360
+        assert stored["analyzer_checkpoint"]["cursor"] == 360
+        assert isinstance(stored["topic"]["queries"], list)
+        assert isinstance(stored["analyzer_checkpoint"]["accepted_state"]["visual_subjects"], list)
+    finally:
+        store.close()
+
+    reopened = SessionStore(config)
+    try:
+        restored = reopened.load()
+        assert restored.segments == recording
+        assert restored.topic == original_topic
+        assert restored.analyzer is None
+        reopened.bind(restored)
+        resumed_pipeline = Pipeline(config, lambda *args: None, session_state=restored)
+        resumed = resumed_pipeline._session_analyzer()
+        assert resumed is not original
+        assert restored.topic == resumed_pipeline._latest_topic == original_topic
+        assert resumed_pipeline._analyze_session(resumed, list(restored.segments)) == original_topic
+        assert built[-1][1] == built[-1][2] == []
+
+        appended = segments(361)[-1]
+        restored.segments.append(appended)
+        restored.topic = resumed_pipeline._analyze_session(resumed, list(restored.segments))
+        assert restored.topic.context_used_segments == 361
+        assert restored.topic.transcript == tuple(segment.text for segment in segments(361))
+        assert len(built[-1][1]) == 1
+        assert built[-1][1][0]["new_transcript"] == appended.text
+        assert built[-1][1][0]["established_context"]["summary"] == original_topic.summary
+        assert restored.analyzer_checkpoint["cursor"] == 361
+        restored.notify_changed()
+        reopened.flush(restored)
+        assert len(json.loads(reopened.path.read_text(encoding="utf-8"))["segments"]) == 361
+    finally:
+        reopened.close()
+
+
+def test_checkpoint_partial_segment_resumes_exact_remaining_characters(monkeypatch):
+    original = narrative.LocalNarrativeAnalyzer(settings())
+
+    def fail_after_one_batch(prompt, call):
+        if call == 2:
+            raise narrative.NarrativeContextError("Injected local model interruption.")
+        return stream_state(model_state(prompt["new_transcript"]))
+
+    install_local_model(monkeypatch, original, fail_after_one_batch)
+    text = "A wooden ship crosses pack ice. " * 410 + "Yes."
+    recording = [TranscriptSegment(0, 600, text)]
+    with pytest.raises(narrative.NarrativeContextError, match="interruption"):
+        original.analyze(recording)
+    checkpoint = original.export_checkpoint()
+    offset = checkpoint["partial_offset"]
+    assert checkpoint["cursor"] == 0
+    assert 0 < offset < len(text)
+    resumed = narrative.LocalNarrativeAnalyzer(settings())
+    prompts, _ = install_local_model(monkeypatch, resumed)
+    assert resumed.restore_checkpoint(checkpoint, recording)
+    topic = resumed.analyze(recording)
+    assert "".join(prompt["new_transcript"] for prompt in prompts) == text[offset:]
+    assert topic.context == text
+    assert topic.context_used_segments == 1
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda data: data.update(version=2),
+    lambda data: data.update(version=True),
+    lambda data: data.update(cursor=True),
+    lambda data: data.update(cursor=-1),
+    lambda data: data.update(cursor=999),
+    lambda data: data.update(partial_offset=1),
+    lambda data: data.update(context_key="0" * 64),
+    lambda data: data.update(processed_digest="0" * 64),
+    lambda data: data.update(summary_method="unknown"),
+    lambda data: data.update(unexpected_native_field="not retained"),
+    lambda data: data["accepted_state"].update(evidence=[]),
+    lambda data: data["accepted_state"].update(summary="x" * 17_000),
+    lambda data: data["accepted_state"].update(search_queries=["pack ice"]),
+])
+def test_invalid_checkpoint_resets_for_safe_complete_reread(monkeypatch, mutation):
+    analyzer = narrative.LocalNarrativeAnalyzer(settings())
+    install_local_model(monkeypatch, analyzer)
+    recording = segments(3)
+    analyzer.analyze(recording)
+    checkpoint = json.loads(json.dumps(analyzer.export_checkpoint()))
+    mutation(checkpoint)
+    assert analyzer.restore_checkpoint(checkpoint, recording) is False
+    assert analyzer.context_used_segments == 0 and analyzer.summary == ""
+    assert recording == segments(3)
+    prompts, _ = install_local_model(monkeypatch, analyzer)
+    assert analyzer.analyze(recording).context_used_segments == 3
+    assert prompts[0]["new_transcript"] == "\n".join(segment.text for segment in recording)
+
+
+def test_processed_text_and_segment_boundary_changes_invalidate_checkpoint(monkeypatch):
+    original = narrative.LocalNarrativeAnalyzer(settings())
+    install_local_model(monkeypatch, original)
+    recording = segments(3)
+    original.analyze(recording)
+    checkpoint = original.export_checkpoint()
+    changed = list(recording)
+    changed[0] = TranscriptSegment(0, 5, "Different previously recorded words.")
+    resumed = narrative.LocalNarrativeAnalyzer(settings())
+    assert not resumed.restore_checkpoint(checkpoint, changed)
+    assert not resumed.restore_checkpoint(checkpoint, list(reversed(recording)))
+    assert not resumed.restore_checkpoint(checkpoint, recording[:2])
+    # Text concatenation alone is insufficient: preserve the recorded segment
+    # boundaries, which define the next incremental model cursor.
+    repartitioned = [TranscriptSegment(0, 5, recording[0].text + recording[1].text),
+                     TranscriptSegment(6, 11, ""), recording[2]]
+    assert not resumed.restore_checkpoint(checkpoint, repartitioned)
+
+
+@pytest.mark.parametrize("change", [{"context_model": "qwen2.5:14b"}, {"book_context": "Another book background."}])
+def test_checkpoint_is_bound_to_interpretation_model_and_background(monkeypatch, change):
+    original = narrative.LocalNarrativeAnalyzer(settings())
+    install_local_model(monkeypatch, original)
+    recording = segments(3)
+    original.analyze(recording)
+    resumed = narrative.LocalNarrativeAnalyzer(settings(**change))
+    assert not resumed.restore_checkpoint(original.export_checkpoint(), recording)
+    assert resumed.context_used_segments == 0
+
+
+def test_empty_checkpoint_and_trailing_empty_segments_restore_without_io(monkeypatch):
+    empty = narrative.LocalNarrativeAnalyzer(settings())
+    resumed = narrative.LocalNarrativeAnalyzer(settings())
+    assert resumed.restore_checkpoint(empty.export_checkpoint(), segments(3))
+    assert resumed.context_used_segments == 0
+    original = narrative.LocalNarrativeAnalyzer(settings())
+    install_local_model(monkeypatch, original)
+    recording = segments(2) + [TranscriptSegment(12, 13, "")]
+    original.analyze(recording)
+    assert resumed.restore_checkpoint(original.export_checkpoint(), recording)
+    assert resumed.context_used_segments == 3
+
+
+def test_export_is_detached_and_excludes_runtime_objects(monkeypatch):
+    analyzer = narrative.LocalNarrativeAnalyzer(settings())
+    install_local_model(monkeypatch, analyzer)
+    analyzer.analyze(segments(1))
+    analyzer._output_tokens = 768
+    analyzer.runtime_object = object()
+    first = analyzer.export_checkpoint()
+    first["accepted_state"]["visual_subjects"].append("not live state")
+    second = analyzer.export_checkpoint()
+    assert "not live state" not in second["accepted_state"]["visual_subjects"]
+    assert "runtime_object" not in second
+    assert "_output_tokens" not in second
+    assert "cache_dir" not in second and "stop_event" not in second
+
+
+def test_non_json_or_oversized_checkpoint_cannot_raise_or_skip_context():
+    analyzer = narrative.LocalNarrativeAnalyzer(settings())
+    for invalid in (None, ["invalid"], {"native": object()}, {"huge": "x" * 100_000}):
+        assert analyzer.restore_checkpoint(invalid, segments(1)) is False
+        assert analyzer.context_used_segments == 0
+
+
+def test_checkpoint_revalidates_grounding_even_if_corrupt_digest_is_recomputed(monkeypatch):
+    original = narrative.LocalNarrativeAnalyzer(settings())
+    install_local_model(monkeypatch, original)
+    recording = segments(3)
+    original.analyze(recording)
+    checkpoint = original.export_checkpoint()
+    checkpoint["accepted_state"]["evidence"] = ["Invented facts absent from every recorded segment."]
+    checkpoint["processed_digest"] = original._checkpoint_digest(
+        tuple(segment.text for segment in recording), checkpoint["cursor"], checkpoint["partial_offset"],
+        checkpoint["accepted_state"], checkpoint["summary_method"])
+    resumed = narrative.LocalNarrativeAnalyzer(settings())
+    assert not resumed.restore_checkpoint(checkpoint, recording)
+    assert resumed.context_used_segments == 0
+    assert recording == segments(3)
