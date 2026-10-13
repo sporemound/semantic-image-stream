@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from pathlib import Path
 import hashlib
 import json
+import logging
 import math
 import re
 import threading
@@ -13,6 +14,20 @@ from .models import ImageCandidate, Topic
 from .semantic_analysis import tokens
 
 CLIP_INITIALIZATION_LOCK = threading.Lock()
+log = logging.getLogger(__name__)
+LEXICAL_FEEDBACK_FINGERPRINT = hashlib.sha256(b"semantic-image-stream:feedback-lexical-v1:512").hexdigest()
+
+
+def _lexical_feedback_vector(texts):
+    """Deterministic local features for the metadata baseline, separate from CLIP."""
+    import numpy as np
+    vector = np.zeros(512, dtype=np.float64)
+    for text in texts:
+        for word in tokens(text):
+            digest = hashlib.sha256(word.encode("utf-8")).digest()
+            vector[int.from_bytes(digest[:4], "big") % len(vector)] += 1 if digest[4] & 1 else -1
+    norm = np.linalg.norm(vector)
+    return vector / norm if norm > 1e-8 else vector
 
 
 class ClipLoadError(RuntimeError):
@@ -75,6 +90,44 @@ def source_weight(candidate: ImageCandidate) -> float:
 class MetadataRanker:
     """Scores lie in 0..1, but are heuristic scores, not calibrated probability."""
     name = "metadata"
+    feedback = None
+
+    def _has_feedback(self):
+        if self.feedback is None:
+            return False
+        count = getattr(self.feedback, "count", None)
+        if count is None:
+            return True
+        try:
+            return count() > 0
+        except Exception:
+            return False
+
+    def _lexical_context_vector(self, topic):
+        import numpy as np
+        scene = _lexical_feedback_vector((topic.scene, *topic.visual_subjects, topic.query))
+        summary = _lexical_feedback_vector((topic.summary,))
+        history = _lexical_feedback_vector(topic.transcript or (topic.context,))
+        vector = scene * .50 + summary * .30 + history * .20
+        norm = np.linalg.norm(vector)
+        return vector / norm if norm > 1e-8 else vector
+
+    def feedback_vectors(self, topic, candidate):
+        return {"image_vector": _lexical_feedback_vector((candidate.title, candidate.description)).tolist(),
+                "context_vector": self._lexical_context_vector(topic).tolist(),
+                "encoder_fingerprint": LEXICAL_FEEDBACK_FINGERPRINT}
+
+    def _personalize(self, scores, images, context, fingerprint):
+        if self.feedback is None:
+            return scores
+        try:
+            return self.feedback.adjust_scores(scores, images, context, fingerprint)
+        except Exception as error:
+            # An optional private preference file must never stop the slideshow.
+            if not getattr(self, "_feedback_warning", False):
+                log.warning("Local image feedback unavailable (%s)", type(error).__name__)
+                self._feedback_warning = True
+            return scores
 
     def rank(self, topic: Topic, candidates: list[ImageCandidate], recent: list[str]) -> list[ImageCandidate]:
         query = tokens(topic.query)
@@ -102,6 +155,12 @@ class MetadataRanker:
             # A credible/high-res unrelated picture must not pass on quality alone.
             if overlap > 0:
                 ranked.append(c)
+        if ranked and self._has_feedback():
+            vectors = [_lexical_feedback_vector((candidate.title, candidate.description)) for candidate in ranked]
+            scores = self._personalize([candidate.score for candidate in ranked], vectors,
+                                      self._lexical_context_vector(topic), LEXICAL_FEEDBACK_FINGERPRINT)
+            for candidate, score in zip(ranked, scores):
+                candidate.score = score
         return sorted(ranked, key=lambda c: c.score, reverse=True)
 
 
@@ -114,6 +173,42 @@ class ClipRanker(MetadataRanker):
         self.model = None
         self.processor = None
         self.device = settings.clip_device
+        self._rank_lock = threading.Lock()
+        self._encoder_snapshot = None
+        self._feedback_encoder_fingerprint = None
+
+    def _feedback_fingerprint(self):
+        if self._feedback_encoder_fingerprint is None:
+            self._feedback_encoder_fingerprint = _fingerprint_snapshot(self._encoder_snapshot)
+        return self._feedback_encoder_fingerprint
+
+    def _personalize_pixels(self, scores, vectors, context):
+        if not self._has_feedback():
+            return scores
+        try:
+            fingerprint = self._feedback_fingerprint()
+        except RuntimeError:
+            return scores
+        return self._personalize(scores, vectors.detach().cpu().numpy(),
+                                 context.detach().cpu().numpy(), fingerprint)
+
+    def feedback_vectors(self, topic, candidate):
+        import torch
+        from PIL import Image
+        access = self.gpu_lock if self.settings.clip_device == "cuda" else nullcontext()
+        with self._rank_lock, access:
+            if self.model is None:
+                self._load(local_only=True)
+            with Image.open(candidate.path) as source:
+                with source.convert("RGB") as raster:
+                    inputs = self.processor(text=[topic.query], images=[raster], return_tensors="pt",
+                                            padding=True, truncation=True)
+                    inputs = {key: value.to(self.device) for key, value in inputs.items()}
+                    with torch.inference_mode():
+                        output = self.model(**inputs)
+            return {"image_vector": output.image_embeds[0].detach().cpu().tolist(),
+                    "context_vector": output.text_embeds[0].detach().cpu().tolist(),
+                    "encoder_fingerprint": self._feedback_fingerprint()}
 
     def _load(self, local_only=False, snapshot=None):
         try:
@@ -162,6 +257,7 @@ class ClipRanker(MetadataRanker):
             # Publish only a fully loaded model. Failed attempts leave model=None
             # so the next attempt can safely reload the original cached weights.
             self.processor, self.model = processor, model
+            self._encoder_snapshot = complete or _cached_encoder_snapshot(self.settings)
 
     def rank(self, topic, candidates, recent):
         import torch
@@ -172,10 +268,12 @@ class ClipRanker(MetadataRanker):
         # CPU model loading/inference must never pause CUDA speech recognition.
         # In particular, a stopped CPU model download can outlive its session.
         access = self.gpu_lock if self.settings.clip_device == "cuda" else nullcontext()
-        with access:
+        with self._rank_lock, access:
             if self.model is None:
                 self._load()
             similarities = []
+            pixel_vectors, text_vector = [], None
+            personalizing = self._has_feedback()
             # Small batches keep RAM/VRAM bounded. CPU is the default for CLIP.
             for offset in range(0, len(candidates), 4):
                 batch = candidates[offset:offset + 4]
@@ -190,6 +288,9 @@ class ClipRanker(MetadataRanker):
                     out = self.model(**inputs)
                     scores = out.logits_per_image[:, 0] / self.model.logit_scale.exp()
                 similarities.extend(scores.detach().cpu().tolist())
+                if personalizing:
+                    pixel_vectors.extend(out.image_embeds.detach().cpu().tolist())
+                    text_vector = out.text_embeds[0].detach().cpu().tolist()
                 for im in images:
                     im.close()
         for c, similarity in zip(candidates, similarities):
@@ -197,6 +298,14 @@ class ClipRanker(MetadataRanker):
             quality = min(1, (c.width * c.height) / 2_000_000)
             specificity = topic.kind in {"science", "history"} and source_weight(c) >= 1.0
             c.score = max(0, min(1, 0.9 * similarity + 0.04 * quality + 0.06 * specificity))
+        if pixel_vectors and text_vector is not None:
+            try:
+                personalized = self._personalize([c.score for c in candidates], pixel_vectors,
+                                                  text_vector, self._feedback_fingerprint())
+            except RuntimeError:
+                personalized = [c.score for c in candidates]
+            for candidate, score in zip(candidates, personalized):
+                candidate.score = score
         return sorted(candidates, key=lambda c: c.score, reverse=True)
 
 
@@ -269,6 +378,42 @@ class ContextClipRanker(ClipRanker):
         return [max(0.0, min(1.0, (similarity - .14) / .30))
                 for similarity in scores.detach().cpu().tolist()]
 
+    def _context_vectors(self, topic):
+        history = self._history_vector(topic.transcript or (topic.context,))
+        background = getattr(self.settings, "book_context", "")
+        summary = self._text_vector((background, topic.summary)) if background or topic.summary else history
+        scene = self._text_vector((topic.scene, *topic.visual_subjects)) if topic.scene else summary
+        return [(vector, weight) for vector, weight in ((scene, .50), (summary, .30), (history, .20))
+                if vector is not None]
+
+    @staticmethod
+    def _combined_context(contexts):
+        vector = sum(value * weight for value, weight in contexts)
+        return vector / vector.norm().clamp_min(1e-8)
+
+    def feedback_vectors(self, topic, candidate):
+        import torch
+        from PIL import Image
+        access = self.gpu_lock if self.settings.clip_device == "cuda" else nullcontext()
+        with self._rank_lock, access:
+            if self.model is None:
+                if _cached_encoder_snapshot(self.settings) is None:
+                    raise RuntimeError("Feedback learning needs the locally cached image model.")
+                self._load()
+            contexts = self._context_vectors(topic)
+            if not contexts:
+                raise RuntimeError("Feedback learning needs an established spoken context.")
+            with Image.open(candidate.path) as source:
+                with source.convert("RGB") as raster:
+                    inputs = self.processor(images=[raster], return_tensors="pt")
+                    inputs = {key: value.to(self.device) for key, value in inputs.items()}
+                    with torch.inference_mode():
+                        image = self.model.get_image_features(**inputs).float()[0]
+                        image = image / image.norm().clamp_min(1e-8)
+            return {"image_vector": image.detach().cpu().tolist(),
+                    "context_vector": self._combined_context(contexts).detach().cpu().tolist(),
+                    "encoder_fingerprint": self._feedback_fingerprint()}
+
     def rank(self, topic, candidates, recent):
         import torch
         from PIL import Image
@@ -279,12 +424,7 @@ class ContextClipRanker(ClipRanker):
         with self._rank_lock, access:
             if self.model is None:
                 self._load()
-            history = self._history_vector(topic.transcript or (topic.context,))
-            background = getattr(self.settings, "book_context", "")
-            summary = self._text_vector((background, topic.summary)) if background or topic.summary else history
-            scene = self._text_vector((topic.scene, *topic.visual_subjects)) if topic.scene else summary
-            contexts = [(vector, weight) for vector, weight in ((scene, .50), (summary, .30), (history, .20))
-                        if vector is not None]
+            contexts = self._context_vectors(topic)
             if not contexts:
                 return []
             for offset in range(0, len(candidates), 4):
@@ -300,6 +440,7 @@ class ContextClipRanker(ClipRanker):
                         vectors = self.model.get_image_features(**inputs).float()
                         vectors = vectors / vectors.norm(dim=-1, keepdim=True).clamp_min(1e-8)
                         scores = self._score_vectors(vectors, contexts)
+                        scores = self._personalize_pixels(scores, vectors, self._combined_context(contexts))
                     for candidate, score in zip(batch, scores):
                         candidate.score = score
                 finally:

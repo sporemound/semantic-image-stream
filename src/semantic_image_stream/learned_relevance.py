@@ -327,13 +327,18 @@ def _checked(artifact, encoder_model):
 def load_adapter(path, encoder_model):
     try:
         with Path(path).open("rb") as source:
-            raw = source.read(MAX_ARTIFACT_BYTES + 1)
+            size = os.fstat(source.fileno()).st_size
+            if size > MAX_ARTIFACT_BYTES:
+                raise ValueError("Relevance model exceeds the size bound")
+            raw = source.read(size + 1)
+            if len(raw) > size or source.read(1):
+                raise ValueError("Relevance model changed while reading")
         if len(raw) > MAX_ARTIFACT_BYTES:
             raise ValueError
         artifact = json.loads(raw)
     except FileNotFoundError:
         raise AdapterError("No trained local relevance model was found. Train the local model first.") from None
-    except (OSError, ValueError, TypeError, RecursionError):
+    except (OSError, ValueError, TypeError, RecursionError, MemoryError):
         raise AdapterError("The local relevance model could not be read. Train it again.") from None
     return _checked(artifact, encoder_model)
 

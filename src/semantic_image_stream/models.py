@@ -30,6 +30,7 @@ class Topic:
     queries: tuple[str, ...] = ()
     transcript: tuple[str, ...] = ()
     context_used_segments: int = 0
+    visual_update: str = "replace"
 
 
 @dataclass

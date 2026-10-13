@@ -9,6 +9,8 @@ dist/
 *.spec
 config.local.toml
 last-session.json
+feedback.json
+.feedback-*.tmp
 .session-*.tmp
 sessions/
 cache/

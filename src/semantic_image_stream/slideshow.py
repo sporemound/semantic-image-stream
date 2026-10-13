@@ -5,8 +5,8 @@ from collections import deque
 import random
 import time
 
-from PySide6.QtCore import QObject, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImageReader, QPainter, QPainterPath, QPixmap
+from PySide6.QtCore import QObject, QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImageReader, QLinearGradient, QPainter, QPainterPath, QPixmap, QTextLayout, QTextOption
 from PySide6.QtWidgets import QWidget
 
 from .models import ImageCandidate
@@ -167,6 +167,9 @@ class ImageCanvas(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
         self.current_pixmap = QPixmap()
         self.previous_pixmap = QPixmap()
+        self.current_title = ""
+        self.title_overlay_visible = False
+        self._title_layout_cache = None
         self.transition = "crossfade"
         self.transition_seconds = 0.8
         self.interval = 9.0
@@ -182,11 +185,17 @@ class ImageCanvas(QWidget):
         if self.current_pixmap.isNull():
             self.update()
 
+    def set_title_overlay(self, visible: bool) -> None:
+        self.title_overlay_visible = bool(visible)
+        self.update()
+
     def set_image(self, candidate: ImageCandidate | None) -> bool:
         if candidate is None:
             self.animation_timer.stop()
             self.previous_pixmap = QPixmap()
             self.current_pixmap = QPixmap()
+            self.current_title = ""
+            self._title_layout_cache = None
             self.update()
             return True
         reader = QImageReader(str(candidate.path))
@@ -200,6 +209,8 @@ class ImageCanvas(QWidget):
             return False
         self.previous_pixmap = self.current_pixmap
         self.current_pixmap = QPixmap.fromImage(image)
+        self.current_title = " ".join((candidate.title or "Untitled image").split())[:1200]
+        self._title_layout_cache = None
         self._started = time.monotonic()
         random.Random(candidate.image_url).shuffle(self._tiles)
         if self.transition != "cut" and (self.transition == "zoom" or self.transition_seconds > 0):
@@ -225,6 +236,68 @@ class ImageCanvas(QWidget):
         width, height = fitted.width() * zoom, fitted.height() * zoom
         rect = QRectF((self.width() - width) / 2, (self.height() - height) / 2, width, height)
         painter.drawPixmap(rect, pixmap, QRectF(pixmap.rect()))
+
+    def _title_layout(self):
+        key = self.width(), self.height(), self.current_title
+        if self._title_layout_cache is not None and self._title_layout_cache[0] == key:
+            return self._title_layout_cache[1]
+        margin = max(18, min(96, int(self.width() * .055), int(self.height() * .07)))
+        width = max(1, self.width() - 2 * margin)
+        size = max(20, min(76, int(self.height() * .075), int(self.width() * .055)))
+        option = QTextOption()
+        option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        for pixels in range(size, 11, -2):
+            font = QFont("Georgia")
+            font.setStyleHint(QFont.StyleHint.Serif)
+            font.setItalic(True)
+            font.setPixelSize(pixels)
+            font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, .4)
+            layout = QTextLayout(self.current_title, font)
+            layout.setTextOption(option)
+            layout.beginLayout()
+            lines, starts = [], []
+            for _ in range(4):
+                line = layout.createLine()
+                if not line.isValid():
+                    break
+                line.setLineWidth(width)
+                starts.append(line.textStart())
+                lines.append(self.current_title[line.textStart():line.textStart() + line.textLength()].strip())
+            layout.endLayout()
+            if len(lines) <= 3:
+                break
+        metrics = QFontMetricsF(font)
+        if len(lines) > 3:
+            lines = lines[:2] + [metrics.elidedText(self.current_title[starts[2]:], Qt.TextElideMode.ElideRight, width)]
+        spacing = metrics.lineSpacing() * 1.05
+        bounds = QRectF(margin, self.height() - margin - spacing * len(lines), width, spacing * len(lines))
+        result = font, lines, bounds
+        self._title_layout_cache = key, result
+        return result
+
+    def _draw_title(self, painter: QPainter) -> None:
+        if not self.title_overlay_visible or not self.current_title:
+            return
+        font, lines, bounds = self._title_layout()
+        gradient_top = max(0, bounds.top() - self.height() * .15)
+        gradient = QLinearGradient(0, gradient_top, 0, self.height())
+        gradient.setColorAt(0, QColor(4, 7, 10, 0))
+        gradient.setColorAt(.45, QColor(4, 7, 10, 55))
+        gradient.setColorAt(1, QColor(4, 7, 10, 210))
+        painter.fillRect(QRectF(0, gradient_top, self.width(), self.height() - gradient_top), gradient)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        painter.setFont(font)
+        painter.setClipRect(bounds.adjusted(-4, -8, 4, 8))
+        metrics = QFontMetricsF(font)
+        baseline = bounds.top() + metrics.ascent()
+        for line in lines:
+            painter.setPen(QColor(0, 0, 0, 170))
+            painter.drawText(QPointF(bounds.left() + 1, baseline + 2), line)
+            painter.setPen(QColor("#f5e8d0"))
+            painter.drawText(QPointF(bounds.left(), baseline), line)
+            baseline += metrics.lineSpacing() * 1.05
+        painter.restore()
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -254,3 +327,6 @@ class ImageCanvas(QWidget):
             self._draw(painter, self.current_pixmap)
         else:
             self._draw(painter, self.current_pixmap)
+        painter.setOpacity(1)
+        painter.setClipping(False)
+        self._draw_title(painter)

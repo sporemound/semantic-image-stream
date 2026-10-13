@@ -690,10 +690,14 @@ def test_decode_failed_image_is_not_replayed_and_preserves_displayed_frame(windo
     bad = ImageCandidate("https://example.com/bad.jpg", "https://example.com/source", "bad", "wikimedia",
                          local_path=str(bad_path))
     recorded = []
+    rejected = []
 
     class RecordingPipeline:
         def record_displayed(self, image):
             recorded.append(image)
+
+        def reject_image(self, image):
+            rejected.append(image)
 
         def stop(self):
             pass
@@ -709,6 +713,7 @@ def test_decode_failed_image_is_not_replayed_and_preserves_displayed_frame(windo
     assert "Could not display image" in window.image_status_label.text()
     assert bad not in window.slideshow.history and bad not in window.slideshow.pending
     assert recorded == [first]
+    assert rejected == [bad]
     window._handle_event(0, "status", "Ready: 3 relevant images")
     assert "Could not display image" in window.image_status_label.text()
     window.next_image()
@@ -716,6 +721,7 @@ def test_decode_failed_image_is_not_replayed_and_preserves_displayed_frame(windo
     for _ in range(4):
         window.next_image()
     assert recorded == [first, second]
+    assert rejected == [bad]
     assert list(window.slideshow.history) == recorded
     assert window.image_history.count() == len(recorded)
     assert bad.image_url not in window.slideshow._seen

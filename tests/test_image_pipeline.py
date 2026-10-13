@@ -280,12 +280,26 @@ async def test_partial_provider_failure_still_tries_alternatives_without_negativ
     monkeypatch.setattr("semantic_image_stream.engine.fallback_queries", lambda _: ["Corona satellite"])
     unavailable = QueryProvider({topic.query: TimeoutError(), "Corona satellite": TimeoutError()})
     available = QueryProvider({}, name="archive")
+    pages = []
+
+    async def paged_failure(query, limit, page):
+        pages.append(("wikimedia", query, page))
+        return await unavailable.search(query, limit)
+
+    async def paged_empty(query, limit, page):
+        pages.append(("archive", query, page))
+        return await available.search(query, limit)
+
+    unavailable.search_page = paged_failure
+    available.search_page = paged_empty
     stop_on_empty(pipeline, monkeypatch, retries=1)
     try:
         await asyncio.wait_for(pipeline._search([unavailable, available], Downloader(directory),
                                                MetadataRanker(), cache), 2)
         expected = [topic.query, "Corona satellite"] * 2
         assert unavailable.queries == available.queries == expected
+        assert pages == [(source, query, 1) for query in expected[:2] for source in ("wikimedia", "archive")]
+        assert all(pipeline._query_pages[query.casefold()] == 2 for query in expected[:2])
         assert all(cache.get_query(query_key(pipeline, query)) is None for query in expected)
     finally:
         cache.close()

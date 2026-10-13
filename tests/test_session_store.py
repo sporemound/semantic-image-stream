@@ -1,6 +1,8 @@
 """Durable story memory across fresh objects and concurrent save/delete work."""
 from copy import deepcopy
+from dataclasses import replace
 import json
+from pathlib import Path
 import threading
 import time
 
@@ -255,6 +257,72 @@ def test_bad_derived_fields_do_not_discard_recorded_speech():
     data["analyzer_checkpoint"] = {"summary": "x" * 20_000}
     loaded = restore_session(data)
     assert len(loaded.segments) == 2 and loaded.topic is None and loaded.analyzer_checkpoint is None
+
+
+def test_retained_scene_and_full_transcript_survive_session_restore():
+    state = story(3)
+    state.topic = replace(state.topic, visual_update="retain")
+    loaded = restore_session(snapshot_session(state))
+    assert loaded.topic.visual_update == "retain"
+    assert loaded.topic.scene == state.topic.scene
+    assert loaded.topic.queries == state.topic.queries
+    assert loaded.topic.transcript == tuple(segment.text for segment in state.segments)
+    assert loaded.topic.context_used_segments == 3
+
+
+def test_older_saved_context_remains_compatible_without_visual_update():
+    data = snapshot_session(story(2))
+    data["topic"].pop("visual_update")
+    loaded = restore_session(data)
+    assert loaded.topic.visual_update == "replace"
+    assert loaded.topic.query == "satellite orbit"
+    assert len(loaded.topic.transcript) == 2
+
+
+def test_invalid_visual_update_preserves_original_recorded_speech():
+    state = story(2)
+    data = snapshot_session(state)
+    data["topic"]["visual_update"] = "unsupported"
+    loaded = restore_session(data)
+    assert loaded.topic is None
+    assert loaded.segments == state.segments
+
+
+def test_small_saved_story_does_not_allocate_the_whole_session_limit(settings, monkeypatch):
+    store = SessionStore(settings)
+    state = story(2)
+    store.bind(state)
+    store.flush(state)
+    size = store.path.stat().st_size
+    original = Path.open
+
+    class SizedReader:
+        def __init__(self, source):
+            self.source = source
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.source.close()
+
+        def fileno(self):
+            return self.source.fileno()
+
+        def read(self, requested=-1):
+            if requested > size + 1:
+                raise MemoryError("Avoid an unnecessary large allocation beside native models")
+            return self.source.read(requested)
+
+    def open_saved(path, *args, **kwargs):
+        source = original(path, *args, **kwargs)
+        return SizedReader(source) if path == store.path and args == ("rb",) else source
+
+    monkeypatch.setattr(Path, "open", open_saved)
+    try:
+        assert store.load().segments == state.segments
+    finally:
+        store.close()
 
 
 def test_clear_image_cache_preserves_saved_story_in_separate_folder(settings):

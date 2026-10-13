@@ -58,7 +58,7 @@ def _topic_fields(topic):
     if topic is None:
         return None
     fields = {key: getattr(topic, key) for key in ("query", "concepts", "kind", "summary", "scene",
-                                                  "visual_subjects", "queries", "context_used_segments")}
+                                                  "visual_subjects", "queries", "context_used_segments", "visual_update")}
     return {key: list(value) if isinstance(value, tuple) else value for key, value in fields.items()}
 
 
@@ -112,7 +112,10 @@ def restore_session(data):
                                 summary=_text(topic.get("summary", ""), 400), scene=_text(topic.get("scene", ""), 280),
                                 visual_subjects=_texts(topic.get("visual_subjects", []), 16),
                                 queries=_texts(topic.get("queries", []), 8, 180), transcript=transcript,
-                                context_used_segments=_integer(topic.get("context_used_segments", 0), 0, len(segments)))
+                                context_used_segments=_integer(topic.get("context_used_segments", 0), 0, len(segments)),
+                                visual_update=_text(topic.get("visual_update", "replace"), 20))
+            if state.topic.visual_update not in {"replace", "retain", "clear"}:
+                raise ValueError("Invalid saved visual update")
     except (ValueError, TypeError):
         state.topic = None
     checkpoint = data.get("analyzer_checkpoint")
@@ -158,11 +161,16 @@ class SessionStore:
             if not self.path.exists():
                 return None
             with self.path.open("rb") as source:
-                raw = source.read(MAX_SESSION_BYTES + 1)
+                size = os.fstat(source.fileno()).st_size
+                if size > MAX_SESSION_BYTES:
+                    raise ValueError("Saved context exceeds the supported size")
+                raw = source.read(size + 1)
+                if len(raw) > size or source.read(1):
+                    raise ValueError("Saved context changed while reading")
             if len(raw) > MAX_SESSION_BYTES:
                 raise ValueError("Saved context exceeds the supported size")
             state = restore_session(json.loads(raw))
-        except (OSError, ValueError, TypeError, RecursionError):
+        except (OSError, ValueError, TypeError, RecursionError, MemoryError):
             self._blocked = True
             raise SessionStoreError("Saved context could not be read and was left untouched. "
                                     "New book can clear it; recording can continue in this window.") from None

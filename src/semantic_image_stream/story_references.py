@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 
@@ -92,7 +93,12 @@ def load_story_references(training_dir: str | Path) -> StoryReferencePack:
         if not path.exists():
             return StoryReferencePack()
         with path.open("rb") as source:
-            raw = source.read(MAX_PACK_BYTES + 1)
+            size = os.fstat(source.fileno()).st_size
+            if size > MAX_PACK_BYTES:
+                raise ValueError("Local example pack exceeded its size bound")
+            raw = source.read(size + 1)
+            if len(raw) > size or source.read(1):
+                raise ValueError("Local example pack changed while reading")
         if len(raw) > MAX_PACK_BYTES:
             raise ValueError("Local example pack exceeded its size bound")
         data = json.loads(raw)
@@ -130,7 +136,7 @@ def load_story_references(training_dir: str | Path) -> StoryReferencePack:
         identity = hashlib.sha256(_encoded(data).encode("utf-8")).hexdigest()
         terms = tuple(frozenset(_generic_tokens(row["source"] + " " + row["question"])) for row in rows)
         return StoryReferencePack(tuple(rows), identity, "ready", terms)
-    except (OSError, ValueError, TypeError, KeyError, RecursionError):
+    except (OSError, ValueError, TypeError, KeyError, RecursionError, MemoryError):
         return StoryReferencePack(status="invalid")
 
 

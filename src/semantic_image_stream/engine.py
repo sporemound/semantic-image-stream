@@ -16,11 +16,12 @@ from uuid import uuid4
 
 from .cache import Cache
 from .image_ranking import build_ranker, is_duplicate
-from .models import ImageCandidate
+from .models import ImageCandidate, Topic
 from .semantic_analysis import TopicGate, build_analyzer, fallback_queries, sanitize_query, tokens
 
 log = logging.getLogger(__name__)
 GPU_LOCK = threading.Lock()
+_SOURCE_PAUSED = object()
 
 
 def _interpreter_key(settings):
@@ -130,9 +131,15 @@ class Pipeline:
         self._segments_lock = self.session_state.lock
         self._recent_hashes = set()
         self._displayed_urls = set()
+        self._rejected_image_urls = set()
         self._query_pages = {}
         self._refresh_queries = set()
+        self._fresh_query_cycles = set()
         self._last_query_failed = False
+        self._last_query_incomplete = False
+        self._last_query_all_paused = False
+        self._last_query_succeeded = False
+        self._search_retry_delay = 30.0
         self._source_retry_at = {}
         self._protected_paths = deque(maxlen=120)
         self._history_lock = threading.Lock()
@@ -143,6 +150,12 @@ class Pipeline:
         self._approved_scope = None
         self._approved_generation = None
         self._last_fill_signature = None
+        self._ranker = None
+        self._feedback_store = None
+        self._feedback_store_lock = threading.Lock()
+        self._feedback_request_lock = threading.Lock()
+        self._feedback_requests = deque()
+        self._feedback_worker_running = False
 
     @property
     def running(self):
@@ -157,6 +170,8 @@ class Pipeline:
     def start(self):
         if self.running:
             return
+        with self._history_lock:
+            self._rejected_image_urls.clear()
         self.stop_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name="sis-pipeline")
         self._thread.start()
@@ -196,6 +211,12 @@ class Pipeline:
             analyzer = None
             self._report_context_failure(exc)
         ranker = build_ranker(self.settings, GPU_LOCK)
+        self._ranker = ranker
+        try:
+            ranker.feedback = self._get_feedback_store()
+        except Exception as exc:
+            log.warning("Local image feedback unavailable (%s)", type(exc).__name__)
+            self.emit("status", "Local image feedback is unavailable; image monitoring continues.")
         providers = build_providers(self.settings)
         cache = Cache(self.settings)
         downloader = ImageDownloader(self.settings)
@@ -330,8 +351,29 @@ class Pipeline:
                         with self._segments_lock:
                             if self.stop_event.is_set():
                                 break
-                            playback_changed = self._update_playback_scope(topic)
-                            changed = gate.changed(topic) or playback_changed
+                            previous = self._latest_topic
+                            retain_requested = topic.visual_update == "retain"
+                            retaining = (retain_requested and previous is not None and bool(previous.query)
+                                         and (not topic.query or all(getattr(previous, name) == getattr(topic, name)
+                                              for name in ("query", "concepts", "kind", "scene", "visual_subjects", "queries"))))
+                            if retaining:
+                                # Abstract narration can update the complete
+                                # book understanding without erasing its last
+                                # grounded visual scene or queued images.
+                                topic = replace(previous, summary=topic.summary, context=topic.context,
+                                                transcript=topic.transcript,
+                                                context_used_segments=topic.context_used_segments,
+                                                visual_update="retain")
+                                playback_changed, changed = False, False
+                            else:
+                                # An earlier batch may have advanced the
+                                # analyzer before a later batch failed. Its
+                                # retained scene can therefore be newer than
+                                # the last scene published by this pipeline.
+                                if retain_requested and previous is not None and topic.query:
+                                    topic = replace(topic, visual_update="replace")
+                                playback_changed = self._update_playback_scope(topic)
+                                changed = gate.changed(topic) or playback_changed
                             # Every successful context update affects in-flight
                             # ranking, even if its compact search query is stable.
                             self._latest_topic = topic
@@ -341,9 +383,11 @@ class Pipeline:
                         signature = self._fill_signature(topic)
                         refill = (bool(topic.query) and len(self._approved_images) < self.settings.prefetch_count
                                   and signature != self._last_fill_signature)
-                        message = ("Local story understanding updated." if topic.query else
+                        message = ("Keeping the current scene while recording more of the story." if retaining else
+                                   "Local story understanding updated." if topic.query else
                                    "No grounded visual subject in this passage yet.")
-                        self._emit_context("ready", message, playback_changed=playback_changed)
+                        self._emit_context("retaining" if retaining else "ready", message,
+                                           playback_changed=playback_changed, retaining=retaining)
                     else:
                         changed = False
                 if topic and failed_count == -1 and (changed or refill):
@@ -510,11 +554,12 @@ class Pipeline:
             self._approved_scope, self._approved_generation = scope, generation
         with self._history_lock:
             seen_urls, seen_hashes = set(self._displayed_urls), list(self._recent_hashes)
+            rejected_urls = set(self._rejected_image_urls)
         self._approved_images = {url: image for url, image in self._approved_images.items()
-                                 if image.path.is_file() and url not in seen_urls
+                                 if image.path.is_file() and url not in seen_urls and url not in rejected_urls
                                  and not is_duplicate(image.phash, seen_hashes)}
 
-    def _emit_context(self, phase, message, playback_changed=False):
+    def _emit_context(self, phase, message, playback_changed=False, retaining=False):
         with self._segments_lock:
             recorded = len(self._segments)
         topic = self._latest_topic
@@ -527,6 +572,8 @@ class Pipeline:
                               "segments_recorded": recorded,
                               "playback_key": f"scene:{self.session_state.playback_generation}",
                               "playback_changed": playback_changed,
+                              "retaining": retaining,
+                              "topic_snapshot": topic,
                               "model": getattr(self.settings, "context_model", "")
                               if self.settings.semantic_provider == "ollama" else "",
                               "method": self.settings.semantic_provider,
@@ -551,7 +598,13 @@ class Pipeline:
             while not self.topic_queue.empty():
                 generation, topic = self.topic_queue.get_nowait()
             self._last_search = time.monotonic()
-            self._sync_image_pool(self._latest_topic or topic)
+            # A queued retry may carry an older summary or an empty passage.
+            # Search from the latest accepted scene, never restore that input.
+            topic = self._latest_topic or topic
+            generation = self._generation
+            if not topic.query:
+                continue
+            self._sync_image_pool(topic)
             if len(self._approved_images) >= self.settings.prefetch_count:
                 continue
             query = sanitize_query(topic.query)
@@ -564,32 +617,45 @@ class Pipeline:
             attempt_stats = {"found": 0, "downloaded": 0, "best_score": None}
             published = False
             ranking_failed = False
+            all_queries_paused = True
+            self._search_retry_delay = max(1.0, self.settings.search_interval)
             while not self.stop_event.is_set():
                 page_key = query.casefold()
-                page = self._query_pages.get(page_key, 0)
-                previous_failures = attempt_failures.copy()
+                page = self._query_pages.setdefault(page_key, 0)
                 candidates = await self._query_candidates(query, providers, cache, page=page,
-                                                          refresh=page_key in self._refresh_queries)
+                                                          refresh=(page_key in self._refresh_queries
+                                                                   or page_key in self._fresh_query_cycles))
                 failed_query = self._last_query_failed
+                incomplete_query = self._last_query_incomplete
+                succeeded_query = self._last_query_succeeded
+                all_queries_paused = all_queries_paused and self._last_query_all_paused
                 self._refresh_queries.discard(page_key)
-                if failed_query:
-                    # A blocked page is not an exhausted page. Retry it after
-                    # source backoff, retaining successful partial results.
+                if incomplete_query:
+                    # Partial results must not hide a recovering source behind
+                    # a combined query cache. A healthy source may still page.
                     self._refresh_queries.add(page_key)
+                if failed_query:
                     attempt_failures["Source unavailable"] += 1
+                previous_failures = attempt_failures.copy()
                 published, ranking_failed = await self._evaluate_candidates(
                     topic, candidates, query_basis if is_fallback else None,
                     query if is_fallback else None, downloader, ranker, cache, rejected_urls, attempt_failures, attempt_stats)
-                transient_page = failed_query or any(attempt_failures[reason] > previous_failures[reason]
+                transient_download = any(attempt_failures[reason] > previous_failures[reason]
                     for reason in ("Source temporarily rate-limited", "Source unavailable", "Network error", "Image download timed out"))
-                if not transient_page and not ranking_failed:
+                # An actual healthy response exhausts this page even if a
+                # different source is cooling down. Failed downloads retain
+                # their page so its already-cached URLs can be retried safely.
+                if succeeded_query and not transient_download and not ranking_failed:
                     self._query_pages[page_key] = (page + 1) % 10
                     if page == 9:
-                        self._refresh_queries.add(page_key)
+                        # Every later page needs a fresh request after the
+                        # first exhausted cycle, including non-head pages.
+                        self._fresh_query_cycles.add(page_key)
                 if len(self._query_pages) > 200:
                     oldest = next(iter(self._query_pages))
                     self._query_pages.pop(oldest)
                     self._refresh_queries.discard(oldest)
+                    self._fresh_query_cycles.discard(oldest)
                 # Raw source hits are not usable matches. Try the remaining
                 # subjects only after validation/ranking exhausts this batch.
                 # A failed local ranker instead retains its explicit diagnostic.
@@ -630,13 +696,23 @@ class Pipeline:
                                         **attempt_stats,
                                         "rejected": sum(attempt_failures.values()), "failures": dict(attempt_failures),
                                         "threshold": self.settings.relevance_threshold, "message": message})
-            if ranking_failed or not self._approved_images or (transient and len(self._approved_images) < self.settings.prefetch_count):
+            if (ranking_failed or not self._approved_images
+                    or ((transient or all_queries_paused) and len(self._approved_images) < self.settings.prefetch_count)):
+                if ranking_failed or transient:
+                    self._search_retry_delay = max(30.0, self.settings.search_interval)
+                if all_queries_paused:
+                    deadlines = [self._source_retry_at.get(provider.name, 0) for provider in providers]
+                    remaining_delays = [deadline - time.monotonic() for deadline in deadlines
+                                        if deadline > time.monotonic()]
+                    if remaining_delays:
+                        self._search_retry_delay = max(self._search_retry_delay, min(remaining_delays))
                 if not ranking_failed:
-                    message = ("Keeping ready images while unavailable sources retry." if self._approved_images else
+                    message = ("Keeping the current scene while image sources cool down; images will retry." if all_queries_paused else
+                               "Keeping ready images while unavailable sources retry." if self._approved_images else
                                "No new images met the relevance and quality filters. See image status for details.")
                     self.emit("status", message)
-                # New speech topics wake retry immediately rather than waiting
-                # behind the old topic's fixed thirty-second failure delay.
+                # Exhausted healthy pages follow the user's search cadence;
+                # model/network failures and source cooldowns retain backoff.
                 await self._wait_for_search_retry(generation, topic)
             cache.prune(set(self._protected_paths))
 
@@ -655,7 +731,7 @@ class Pipeline:
         for candidate in candidates:
             by_url.setdefault(candidate.image_url, candidate)
         with self._history_lock:
-            seen_urls = set(self._displayed_urls)
+            seen_urls = self._displayed_urls | self._rejected_image_urls
         unique = [candidate for url, candidate in by_url.items()
                   if url not in self._approved_images and url not in seen_urls]
         attempt_stats["found"] += len(unique)
@@ -793,12 +869,12 @@ class Pipeline:
                     attempt_stats["best_score"] = max(best_score, attempt_stats["best_score"] or 0.0)
                 chosen, hashes = [], list(recent)
                 with self._history_lock:
-                    displayed_urls = set(self._displayed_urls)
+                    excluded_urls = self._displayed_urls | self._rejected_image_urls
                     hashes = list(self._recent_hashes)
                 for candidate in ranked:
                     other_hashes = [approved.phash for url, approved in self._approved_images.items()
                                     if url != candidate.image_url]
-                    if (candidate.image_url not in displayed_urls and candidate.image_url not in self._approved_images
+                    if (candidate.image_url not in excluded_urls and candidate.image_url not in self._approved_images
                             and candidate.score >= self.settings.relevance_threshold
                             and not is_duplicate(candidate.phash, hashes)
                             and not is_duplicate(candidate.phash, other_hashes)):
@@ -828,6 +904,9 @@ class Pipeline:
 
     async def _query_candidates(self, query, providers, cache, page=0, refresh=False):
         self._last_query_failed = False
+        self._last_query_incomplete = False
+        self._last_query_all_paused = False
+        self._last_query_succeeded = False
         identity = [query.casefold(), self.settings.providers, self.settings.results_per_provider]
         if "duckduckgo" in self.settings.providers:
             # Older combined cache entries can contain only the other sources'
@@ -839,11 +918,12 @@ class Pipeline:
         key = json.dumps(identity)
         cached = cache.get_query(key)
         if cached is not None and not refresh:
+            self._last_query_succeeded = True
             return cached
         self.emit("status", "Retrieving existing images from selected sources…")
         async def search(provider):
             if time.monotonic() < self._source_retry_at.get(provider.name, 0):
-                return []
+                return _SOURCE_PAUSED
             if not page:
                 return await provider.search(query, self.settings.results_per_provider)
             paged = getattr(provider, "search_page", None)
@@ -852,10 +932,15 @@ class Pipeline:
                                        return_exceptions=True)
         candidates = []
         succeeded = True
+        self._last_query_all_paused = bool(results) and all(result is _SOURCE_PAUSED for result in results)
         for provider, result in zip(providers, results):
-            if isinstance(result, Exception):
+            if result is _SOURCE_PAUSED:
+                succeeded = False
+                self._last_query_incomplete = True
+            elif isinstance(result, Exception):
                 succeeded = False
                 self._last_query_failed = True
+                self._last_query_incomplete = True
                 response = getattr(result, "response", None) or getattr(getattr(result, "__cause__", None), "response", None)
                 if response is not None and response.status_code == 429:
                     delay = 30.0
@@ -867,11 +952,12 @@ class Pipeline:
                     self._source_retry_at[provider.name] = time.monotonic() + delay
                 self.emit("status", f"{provider.name} unavailable ({type(result).__name__}); trying other sources.")
             else:
+                self._last_query_succeeded = True
                 candidates.extend(result)
         # A genuine zero-result query is cached too, preventing unchanged
         # narration from repeatedly hitting the same sources. Availability
         # errors are never treated as evidence that a subject has no images.
-        if candidates or succeeded:
+        if candidates or (succeeded and self._last_query_succeeded):
             cache.put_query(key, candidates)
         return candidates
 
@@ -893,13 +979,108 @@ class Pipeline:
                                 "failures": {reason: 1}, "message": message})
 
     async def _wait_for_search_retry(self, generation, topic):
-        # New subjects wake a failed visual batch; unchanged subjects retain
-        # the existing bounded retry delay so a broken local model cannot spin.
-        end = time.monotonic() + max(30, self.settings.search_interval)
+        # New subjects wake retry immediately. Healthy empty pages keep the
+        # configured cadence; unavailable models/sources use a longer backoff.
+        end = time.monotonic() + self._search_retry_delay
         while self.topic_queue.empty() and time.monotonic() < end and not self.stop_event.is_set():
             await asyncio.sleep(0.1)
         if not self.stop_event.is_set() and generation == self._generation and self.topic_queue.empty():
             self.topic_queue.put_nowait((generation, topic))
+
+    def _get_feedback_store(self):
+        with self._feedback_store_lock:
+            if self._feedback_store is None:
+                from .feedback import FeedbackStore
+                self._feedback_store = FeedbackStore(self.settings)
+            return self._feedback_store
+
+    def get_feedback_vote(self, topic_snapshot, candidate):
+        try:
+            return self._get_feedback_store().get_vote(topic_snapshot, candidate)
+        except Exception as exc:
+            log.warning("Local image feedback lookup failed (%s)", type(exc).__name__)
+            return None
+
+    def record_feedback(self, candidate, positive, topic_snapshot):
+        """Queue a local vote using the immutable context shown at click time."""
+        request_id = uuid4().hex
+        if (not isinstance(candidate, ImageCandidate) or not isinstance(topic_snapshot, Topic)
+                or not topic_snapshot.query or not isinstance(positive, bool)):
+            self._emit_feedback_async(request_id, candidate, positive,
+                                      "A visible image and accepted story context are needed to save feedback.")
+            return request_id
+        start_worker = False
+        with self._feedback_request_lock:
+            full = len(self._feedback_requests) >= 32
+            if not full:
+                self._feedback_requests.append((request_id, replace(candidate), positive, topic_snapshot, self._ranker))
+                if not self._feedback_worker_running:
+                    self._feedback_worker_running = True
+                    start_worker = True
+        if full:
+            self._emit_feedback_async(request_id, candidate, positive,
+                                      "Local feedback is busy. Please try saving this vote again shortly.")
+        elif start_worker:
+            # Drain votes even after Stop. Exit when empty so retired workers
+            # do not retain old native models or complete book sessions.
+            threading.Thread(target=self._save_feedback_requests, daemon=True, name="sis-image-feedback").start()
+        return request_id
+
+    def _emit_feedback_async(self, request_id, candidate, positive, message):
+        # A direct GUI-thread callback could arrive before the caller stores
+        # its request ID. Worker-thread delivery queues that acknowledgment.
+        threading.Thread(target=self._emit_feedback, args=(request_id, candidate, positive),
+                         kwargs={"success": False, "message": message},
+                         daemon=True, name="sis-feedback-ack").start()
+
+    def _save_feedback_requests(self):
+        while True:
+            with self._feedback_request_lock:
+                if not self._feedback_requests:
+                    self._feedback_worker_running = False
+                    return
+                request_id, candidate, positive, topic, ranker = self._feedback_requests.popleft()
+            try:
+                store = self._get_feedback_store()
+                # Save the label before optional native work. This upsert is
+                # durable even if visual features cannot be prepared.
+                result = store.record(topic, candidate, positive)
+            except Exception as exc:
+                log.warning("Local image feedback save failed (%s)", type(exc).__name__)
+                self._emit_feedback(request_id, candidate, positive, success=False,
+                                    message="Feedback could not be saved locally. Please try again.")
+                continue
+            features_failed = False
+            try:
+                extract = getattr(ranker, "feedback_vectors", None)
+                vectors = extract(topic, candidate) if extract else None
+                if vectors is not None:
+                    result = store.record(topic, candidate, positive, vectors=vectors)
+            except Exception as exc:
+                features_failed = True
+                log.warning("Local image feedback features unavailable (%s)", type(exc).__name__)
+            message = ("Saved locally with visual features for relevance learning." if result.get("learned") else
+                       "Saved locally; visual features were unavailable for this vote.")
+            if features_failed:
+                message = "Feedback saved locally. Visual learning could not be updated for this vote."
+            self._emit_feedback(request_id, candidate, positive, success=True, result=result,
+                                message=message, features_failed=features_failed)
+
+    def _emit_feedback(self, request_id, candidate, positive, *, success, message, result=None, features_failed=False):
+        result = result or {}
+        self.emit("feedback", {"request_id": request_id, "context_key": result.get("context_key", ""),
+                               "image_url": getattr(candidate, "image_url", ""),
+                               "vote": positive if isinstance(positive, bool) else None,
+                               "count": result.get("count", 0),
+                               "learned": bool(result.get("learned")) and not features_failed,
+                               "success": success, "message": message})
+
+    def reject_image(self, image):
+        # Qt may reject a raster that passed the download decoder. The GUI
+        # only records its URL; the search worker frees the slot and refills.
+        # It was never displayed, so persistent viewing history stays intact.
+        with self._history_lock:
+            self._rejected_image_urls.add(image.image_url)
 
     def record_displayed(self, image):
         with self._history_lock:

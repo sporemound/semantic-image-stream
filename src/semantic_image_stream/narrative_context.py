@@ -45,6 +45,10 @@ RESPONSE_SCHEMA = {
         "kind": {"type": "string", "enum": ["general", "science", "history"]},
         "evidence": {"type": "array", "minItems": 1, "maxItems": 4,
                      "items": {"type": "string", "minLength": 1, "maxLength": 180}},
+        "visual_update": {"type": "object", "additionalProperties": False,
+                          "required": ["mode", "evidence"],
+                          "properties": {"mode": {"type": "string", "enum": ["retain", "replace", "clear"]},
+                                         "evidence": {"type": "string", "minLength": 1, "maxLength": 180}}},
     },
 }
 
@@ -59,6 +63,15 @@ new events, rather than only the opening passage. Distinguish dreams, memories a
 hypothetical events from waking events. Keep the story summary distinct from the current scene. Preserve
 earlier established facts unless the new passage changes them; resolve pronouns through
 established context. A name alone is not a new setting or subject.
+Keep the established actual environment during commentary, dialogue, feelings and
+incidental sensory reactions. A stinging face, warm sensation or uneasiness alone
+does not replace the established setting with a search for an isolated body detail.
+Change visuals for a recorded new setting, significant observed physical event, or
+explicit change/removal of the depicted object. Optionally return visual_update:
+mode retain for continuing context, replace for an observed visual change, or clear
+for a newly unvisualizable physical scene. Copy its evidence from evidence_options.
+When retaining, preserve the established scene, subjects and searches exactly, and
+update the summary with the new passage while keeping persistent setting facts.
 Explicit observations override ordinary assumptions. Never infer lighting, weather,
 season or terrain from a clock time, geographic label, genre or comparison with the past.
 Do not turn an initial guess, imagined object, negation or metaphor into an observed object.
@@ -243,6 +256,94 @@ def _unsupported_summary_terms(value, observed):
     return _unsupported_visual_terms(value, observed) - narrative_prose
 
 
+def _physical_clauses(text):
+    """Source clauses usable for a physical change, rather than a narrated idea."""
+    text = text.replace("’", "'").replace("‘", "'")
+    for clause in re.split(r"[.!?;\n]+", text):
+        if (not re.search(r"\b(?:woke|awoke|awakened)\b", clause, re.I)
+                and re.search(r"\b(?:thought|wondered|imagined|dream(?:ed|ing)?|remembered|recalled|"
+                     r"hoped|planned|intended|wished|would|might|could|said|asked|told)\b", clause, re.I)):
+            continue
+        yield clause
+
+
+def _source_changes(text, previous):
+    """Return recorded transition, removed visual anchors, and changed polarity.
+
+    These checks only control reuse of an already grounded scene. They never
+    extract a new subject or create a search from raw narration.
+    """
+    anchors = _visual_content_tokens(" ".join(previous["visual_subjects"] + previous["search_queries"]))
+    removed, polarity = set(), None
+    transition = False
+    for clause in _physical_clauses(text):
+        observed = _observed_text(clause)
+        # A move must be an actual narrated action. A place name or chapter
+        # word alone cannot erase an established environment.
+        transition |= bool(re.search(
+            r"\b(?:arrived|entered|emerged|stepped|moved|walked|went|reached)\s+"
+            r"(?:into|inside|outside|out of|to|at|through)\b|"
+            r"\b(?:entered|reached)\s+(?:the|a|an)\b|"
+            r"\b(?:was|were|is|are)\s+now\s+(?:in|inside|outside|at|on)\b|"
+            r"\b(?:attacked|struck|shot|collapsed|exploded|shattered|appeared|erupted|woke|awoke|awakened)\b",
+            observed, re.I))
+        clause_words = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", clause.casefold())
+        for index, word in enumerate(clause_words):
+            word_tokens = _visual_tokens(word)
+            anchor = {old for old in anchors if any(old == token or old == token + "s" or token == old + "s"
+                                                    for token in word_tokens)}
+            if not anchor:
+                continue
+            before = clause_words[max(0, index - 2):index]
+            preceding = " ".join(clause_words[max(0, index - 4):index])
+            after = " ".join(clause_words[index + 1:index + 6])
+            if (any(value in {"no", "without", "neither"} for value in before)
+                    or re.search(r"\b(?:isn't|aren't|wasn't|weren't)\s+(?:a|an|any)"
+                                 r"(?:\s+\w+){0,2}$", preceding)
+                    or re.match(r"(?:(?:was|were|is|are|has|had)\s+)?"
+                                r"(?:gone|missing|removed|vanished|disappeared|absent)\b", after)
+                    or re.match(r"(?:isn't|aren't|wasn't|weren't)\s+(?:there|present|visible|here)\b", after)
+                    or re.match(r"(?:(?:was|were|is|are)\s+)?(?:not|no longer)\s+"
+                                r"(?:there|present|visible|here)\b", after)):
+                removed |= anchor
+        if _visual_content_tokens(clause) & anchors:
+            if re.search(r"\b(?:is|are|was|were)\s+(?:not|no longer)\s+open\b|"
+                         r"\b(?:isn't|aren't|wasn't|weren't)\s+open\b", clause, re.I):
+                polarity = "closed"
+            elif re.search(r"\b(?:is|are|was|were)\s+(?:not|no longer)\s+(?:closed|shut)\b|"
+                           r"\b(?:isn't|aren't|wasn't|weren't)\s+(?:closed|shut)\b", clause, re.I):
+                polarity = "open"
+            elif re.search(r"\b(?:closed|shut|closing)\b", observed, re.I):
+                polarity = "closed"
+            elif re.search(r"\b(?:open|opened|opening)\b", observed, re.I):
+                polarity = "open"
+    old_visuals = " ".join([previous["current_scene"], *previous["search_queries"]])
+    old_polarity = ("closed" if re.search(r"\b(?:closed|shut)\b", old_visuals, re.I)
+                    else "open" if re.search(r"\bopen\b", old_visuals, re.I) else None)
+    changed_polarity = polarity if old_polarity and polarity and old_polarity != polarity else None
+    return transition, removed, changed_polarity
+
+
+def _bounded_summary(previous, current):
+    previous, current = previous.strip(), current.strip()
+    if current in previous:
+        return previous
+    combined = (previous + " " + current).strip()
+    if len(combined) <= 400:
+        return combined
+
+    def bounded(value, limit):
+        return value if len(value) <= limit else value[:limit + 1].rsplit(" ", 1)[0]
+
+    # Preserve the established core while reserving room for each new passage.
+    # Keeping an entire 400-character old summary would freeze future updates.
+    core = re.split(r"(?<=[.!?])\s+", previous, maxsplit=1)[0]
+    core = bounded(core, 180)
+    if core and core in current:
+        return bounded(current, 400)
+    return (core + " " + bounded(current, 399 - len(core))).strip()
+
+
 def _check_stop(stop_event):
     if stop_event.is_set():
         raise NarrativeCancelled("Local story analysis cancelled.")
@@ -303,6 +404,7 @@ class LocalNarrativeAnalyzer:
         self._service_verified = False
         self._manifest_digest = None
         self.summary_method = "local model"
+        self._visual_update = "replace"
         self._output_tokens = 384
         self._references = story_references_for(settings)
 
@@ -327,6 +429,7 @@ class LocalNarrativeAnalyzer:
         self._cursor = self._offset = 0
         self._history_snapshot = ()
         self._state = self._empty_state()
+        self._visual_update = "replace"
         self.summary_method = "local model"
 
     def _checkpoint_context_key(self):
@@ -511,6 +614,7 @@ class LocalNarrativeAnalyzer:
             raise EvidenceGroundingError("no_usable_latest_quote")
         response_schema = json.loads(json.dumps(RESPONSE_SCHEMA))
         response_schema["properties"]["evidence"]["items"]["enum"] = evidence_options
+        response_schema["properties"]["visual_update"]["properties"]["evidence"]["enum"] = evidence_options
         payload = {
             "model": self.settings.context_model,
             "system": SYSTEM_PROMPT,
@@ -663,7 +767,8 @@ class LocalNarrativeAnalyzer:
         return " ".join(parts)
 
     def _validate(self, data, available, new_text):
-        if not isinstance(data, dict) or set(data) != set(RESPONSE_SCHEMA["required"]):
+        required = set(RESPONSE_SCHEMA["required"])
+        if not isinstance(data, dict) or set(data) not in (required, required | {"visual_update"}):
             raise NarrativeContextError("The local story model returned an invalid context structure.")
         for field, limit in (("summary", 400), ("current_scene", 280)):
             if not isinstance(data[field], str) or not data[field].strip() or len(data[field]) > limit:
@@ -676,6 +781,15 @@ class LocalNarrativeAnalyzer:
                     or any(not isinstance(value, str) or not value.strip() or len(value) > limit for value in values)):
                 raise NarrativeContextError("The local story model returned invalid visual subjects or evidence.")
         last_passage = next((line.strip() for line in reversed(new_text.split("\n")) if line.strip()), "")
+        if "visual_update" in data:
+            update = data["visual_update"]
+            if (not isinstance(update, dict) or set(update) != {"mode", "evidence"}
+                    or update["mode"] not in {"retain", "replace", "clear"}
+                    or not isinstance(update["evidence"], str) or not update["evidence"].strip()
+                    or len(update["evidence"]) > 180):
+                raise NarrativeContextError("The local story model returned an invalid visual update.")
+            if not _quote_matches(update["evidence"], last_passage):
+                raise EvidenceGroundingError("no_latest_visual_update_quote")
         if not data["evidence"] or any(not _quote_matches(quote, available) for quote in data["evidence"]):
             raise EvidenceGroundingError()
         if not any(_quote_matches(quote, new_text) for quote in data["evidence"]):
@@ -743,7 +857,8 @@ class LocalNarrativeAnalyzer:
             queries = queries[:3]
         if data["search_queries"] and not queries:
             raise VisualGroundingError(unsupported)
-        result = dict(data)
+        # Optional control metadata is never part of the persisted factual state.
+        result = {field: data[field] for field in RESPONSE_SCHEMA["required"]}
         result["search_queries"] = queries
         result["visual_subjects"] = subjects or queries
         latest_evidence = [quote for quote in data["evidence"]
@@ -767,6 +882,65 @@ class LocalNarrativeAnalyzer:
         result["_summary_method"] = method
         return result
 
+    def _apply_visual_update(self, state, available, new_text, descriptor=None):
+        previous = self._state
+        if not previous["search_queries"]:
+            return state, "replace" if state["search_queries"] else "clear"
+        transition, removed, polarity = _source_changes(new_text, previous)
+        physical = " ".join(_physical_clauses(new_text))
+        latest = _visual_content_tokens(_observed_text(physical))
+        old_anchors = _visual_content_tokens(" ".join(previous["visual_subjects"] + previous["search_queries"]))
+        new_anchors = _visual_content_tokens(" ".join(state["visual_subjects"] + state["search_queries"]))
+        fresh_anchors = (new_anchors & latest) - old_anchors
+        blank_scene = bool(re.search(
+            r"\b(?:everything|view|screen|room|scene|surroundings)\b[^.!?\n]{0,40}"
+            r"\b(?:black|blank|invisible|empty|nothing)\b|\bnothing\s+(?:was|is)\s+visible\b",
+            physical, re.I))
+        sensory = bool(re.search(
+            r"\b(?:felt|feeling|uneasy|uneasiness|afraid|worried|stinging|tingling|aching|"
+            r"tasted|smelled|sensation|nauseous)\b", physical, re.I))
+        physical_event = bool(re.search(
+            r"\b(?:attacked|struck|shot|collapsed|exploded|shattered|bleeding|wound|"
+            r"lesion|gash|bruise|saw|visible)\b", _observed_text(physical), re.I))
+        sensory_only = sensory and not transition and not physical_event
+        old_still_grounded = not any(_unsupported_visual_terms(value, _observed_text(available))
+                                    for value in [previous["current_scene"], *previous["visual_subjects"],
+                                                  *previous["search_queries"]])
+        changed = transition or bool(removed) or bool(polarity) or blank_scene
+        retain = (old_still_grounded and not changed
+                  and (sensory_only or not (new_anchors & latest) or not fresh_anchors))
+        if retain:
+            # Keep accepted visuals byte-for-byte. New raw narration, latest
+            # evidence and a grounded cumulative summary still advance normally.
+            for field in ("current_scene", "visual_subjects", "search_queries", "kind"):
+                state[field] = previous[field].copy() if isinstance(previous[field], list) else previous[field]
+            state["summary"] = _bounded_summary(previous["summary"], state["summary"])
+            return state, "retain"
+        # Contradicted historical facts remain in the raw transcript but cannot
+        # continue as active provider searches merely because they once existed.
+        if removed:
+            state["search_queries"] = [query for query in state["search_queries"]
+                                       if not (_visual_content_tokens(query) & removed)]
+            state["visual_subjects"] = [subject for subject in state["visual_subjects"]
+                                        if not (_visual_content_tokens(subject) & removed)]
+            if _visual_content_tokens(state["current_scene"]) & removed:
+                state["current_scene"] = ("; ".join(state["visual_subjects"]) + ". "
+                                           + state["evidence"][-1])[:280]
+        if polarity:
+            contradicted = r"\bopen\b" if polarity == "closed" else r"\b(?:closed|shut)\b"
+            state["search_queries"] = [query for query in state["search_queries"]
+                                       if not re.search(contradicted, query, re.I)]
+            state["visual_subjects"] = [subject for subject in state["visual_subjects"]
+                                        if not re.search(contradicted, subject, re.I)]
+            if re.search(contradicted, state["current_scene"], re.I):
+                state["current_scene"] = state["evidence"][-1]
+        # A confirmed new physical scene cannot reuse a model's historical-only
+        # query; it waits for a grounded new depiction instead.
+        if (transition and not (new_anchors & latest)) or (blank_scene and not fresh_anchors):
+            state["search_queries"] = []
+            state["visual_subjects"] = []
+        return state, "replace" if state["search_queries"] else "clear"
+
     def analyze(self, segments: Sequence[TranscriptSegment], stop_event=None) -> Topic | None:
         active_stop = stop_event if stop_event is not None else self.stop_event
         _check_stop(active_stop)
@@ -784,6 +958,7 @@ class LocalNarrativeAnalyzer:
                 raise NarrativeContextError("Recorded story history changed. Start a new session to analyze another recording.")
             if not transcript:
                 return None
+            update_mode = None
             if self._cursor < len(transcript):
                 self._ensure_service(active_stop, status)
             while self._cursor < len(transcript):
@@ -805,11 +980,16 @@ class LocalNarrativeAnalyzer:
                         state = self._validate(candidate, available, new_text)
                     _check_stop(active_stop)
                     self.summary_method = state.pop("_summary_method", "local model")
+                    state, batch_update = self._apply_visual_update(
+                        state, available, new_text, candidate.get("visual_update"))
+                    if update_mode is None or batch_update != "retain":
+                        update_mode = batch_update
                     self._state = state
                     if self.summary_method != "local model":
                         status("Story visuals checked against model-selected recorded evidence.")
                 self._cursor, self._offset = cursor, offset
                 self._history_snapshot = transcript
+            self._visual_update = update_mode or "replace"
             status(f"Story context ready · all {self._cursor} transcript segments understood locally")
             if not self._state["search_queries"]:
                 status("Waiting for enough story context to identify a grounded visual subject.")
@@ -818,6 +998,7 @@ class LocalNarrativeAnalyzer:
                          concepts=tuple(self._state["visual_subjects"]), kind=self._state["kind"],
                          summary=self.summary, scene=self.scene,
                          visual_subjects=tuple(self._state["visual_subjects"]), queries=queries,
-                         transcript=transcript, context_used_segments=self._cursor)
+                         transcript=transcript, context_used_segments=self._cursor,
+                         visual_update=self._visual_update)
         finally:
             self._lock.release()

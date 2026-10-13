@@ -39,6 +39,7 @@ QLabel#source { background: #0c131c; padding: 12px; }
 QFrame#settings { background: #17212d; border: 1px solid #273646; border-radius: 8px; }
 QPushButton { background: #243344; border: 1px solid #364b5e; border-radius: 6px; padding: 8px 12px; }
 QPushButton:hover { background: #30485d; border-color: #76b9bb; }
+QPushButton:checked { background: #305767; border-color: #86d4c4; color: #edf8ff; }
 QPushButton:disabled { color: #718292; background: #192431; border-color: #273646; }
 QPushButton#start { color: #072420; background: #86d4c4; border-color: #86d4c4; font-weight: 600; }
 QPushButton#start:hover { background: #b0eadb; }
@@ -103,12 +104,16 @@ class MainWindow(QMainWindow):
         self._monitoring = False
         self._stopping = False
         self._fullscreen = False
+        self._fullscreen_title = False
         self._normal_geometry = None
         self._last_error = ""
         self._image_error = ""
         self._retrieval_message = "Images: waiting for a topic."
         self._retrieval_seen = False
         self._displayed_candidate: ImageCandidate | None = None
+        self._feedback_topic: Topic | None = None
+        self._feedback_frame_token = 0
+        self._feedback_pending: dict = {}
         self.current_topic = ""
         self.setWindowTitle("Semantic Image Stream")
         self.resize(1360, 900)
@@ -183,7 +188,10 @@ class MainWindow(QMainWindow):
         self.source_label.linkActivated.connect(self._open_source)
         stage_layout.addWidget(self.source_label)
         self.transport = QWidget()
-        transport = QHBoxLayout(self.transport)
+        transport_column = QVBoxLayout(self.transport)
+        transport_column.setContentsMargins(0, 0, 0, 0)
+        transport = QHBoxLayout()
+        transport_column.addLayout(transport)
         transport.setContentsMargins(0, 0, 0, 0)
         self.pause_button = QPushButton("Pause images")
         self.pause_button.clicked.connect(self.toggle_pause)
@@ -203,6 +211,27 @@ class MainWindow(QMainWindow):
         transport.addStretch()
         transport.addWidget(self.queue_label)
         transport.addWidget(self.fullscreen_button)
+        feedback_row = QHBoxLayout()
+        self.good_fit_button = QPushButton("👍 Good fit")
+        self.poor_fit_button = QPushButton("👎 Poor fit")
+        for button in (self.good_fit_button, self.poor_fit_button):
+            button.setCheckable(True)
+            button.setEnabled(False)
+            feedback_row.addWidget(button)
+        self.good_fit_button.setToolTip("This image fits the current spoken story. Your vote is saved locally.")
+        self.poor_fit_button.setToolTip("This image does not fit the current spoken story. Save your vote and show the next unseen image if one is ready.")
+        self.good_fit_button.clicked.connect(lambda: self.vote_current_image(True))
+        self.poor_fit_button.clicked.connect(lambda: self.vote_current_image(False))
+        self.feedback_status_label = QLabel("Vote on how the image fits the story.")
+        self.feedback_status_label.setObjectName("status")
+        self.feedback_status_label.setWordWrap(True)
+        self.feedback_status_label.setTextFormat(Qt.TextFormat.PlainText)
+        feedback_row.addWidget(self.feedback_status_label, 1)
+        self.fullscreen_title_button = QPushButton("Fullscreen with title")
+        self.fullscreen_title_button.setToolTip("Show the image's own title in a large serif caption. Escape returns to controls.")
+        self.fullscreen_title_button.clicked.connect(lambda: self.toggle_fullscreen(with_title=True))
+        feedback_row.addWidget(self.fullscreen_title_button)
+        transport_column.addLayout(feedback_row)
         stage_layout.addWidget(self.transport)
         self.body.addWidget(stage)
         self.sidebar = QWidget()
@@ -652,6 +681,8 @@ class MainWindow(QMainWindow):
         self._session_book_context = book_context
         self._transcript_segments.clear()
         self._context_payload.clear()
+        self._feedback_topic = None
+        self._feedback_pending.clear()
         self._context_frozen = False
         self._playback_key = ""
         self._explicit_playback_key = False
@@ -802,6 +833,8 @@ class MainWindow(QMainWindow):
                 except RuntimeError:
                     pass
             self.pipeline = Pipeline(deepcopy(self.settings), callback, session_state=self._session_state)
+            self._feedback_pending.clear()
+            self._update_feedback_controls()
             if not self._transcript_segments:
                 self.current_topic = ""
                 self._playback_key = ""
@@ -850,6 +883,7 @@ class MainWindow(QMainWindow):
             control.setEnabled(not active)
         self._preset_selected()
         self._update_context_controls()
+        self._update_feedback_controls()
         if not active:
             is_file = self.audio_mode.currentData() == "file"
             self.audio_file.setEnabled(is_file)
@@ -880,6 +914,7 @@ class MainWindow(QMainWindow):
             if self._context_frozen:
                 return
             topic: Topic = payload
+            self._feedback_topic = topic
             if topic.summary or topic.scene or topic.visual_subjects or topic.context_used_segments:
                 self._show_context({"phase": "ready", "summary": topic.summary, "scene": topic.scene,
                                     "visual_subjects": topic.visual_subjects,
@@ -897,6 +932,7 @@ class MainWindow(QMainWindow):
                 self.topic_history.item(0).setToolTip(topic.context)
                 while self.topic_history.count() > 30:
                     self.topic_history.takeItem(self.topic_history.count() - 1)
+            self._update_feedback_controls()
         elif kind == "images":
             if self._context_frozen:
                 return
@@ -917,6 +953,8 @@ class MainWindow(QMainWindow):
             self._retrieval_seen = True
             self._retrieval_message = self._format_retrieval(payload)
             self._refresh_image_status()
+        elif kind == "feedback":
+            self._feedback_saved(payload)
 
     def _show_transcript(self, segments: list[TranscriptSegment]) -> None:
         """Append a full-session event's new lines without rebuilding an audiobook."""
@@ -949,10 +987,23 @@ class MainWindow(QMainWindow):
 
     def _show_context(self, payload: dict) -> None:
         payload = dict(payload)
-        if payload.get("phase") in {"updating", "error"}:
+        snapshot = payload.pop("topic_snapshot", None)
+        if isinstance(snapshot, Topic):
+            self._feedback_topic = snapshot
+        retaining = payload.get("phase") == "retaining" or bool(payload.get("retaining"))
+        if retaining and not payload.get("message"):
+            payload["message"] = "Retaining established scene while waiting for new visual information."
+        if "phase" in payload:
+            payload.setdefault("retaining", retaining)
+        preserving = retaining or payload.get("phase") in {"updating", "error"}
+        if preserving:
             for field in ("summary", "scene", "visual_subjects"):
                 if not payload.get(field) and self._context_payload.get(field):
                     payload.pop(field, None)
+            if self._playback_key:
+                # Incomplete/error/no-new-information polls cannot establish
+                # another scene or discard its already approved pending images.
+                payload.pop("playback_key", None)
         if payload.get("playback_key") is not None:
             playback_key = "context:" + str(payload["playback_key"])
             self._explicit_playback_key = True
@@ -970,7 +1021,10 @@ class MainWindow(QMainWindow):
             coverage = f"Using {used} of {recorded} recorded segments"
             if recorded > used:
                 coverage += f" · {recorded - used} awaiting context update"
-        message = str(context.get("message") or ("Updating local interpretation…" if phase == "updating" else ""))
+        retaining = phase == "retaining" or bool(context.get("retaining"))
+        message = str(context.get("message") or
+                      ("Retaining established scene while waiting for new visual information." if retaining else
+                       "Updating local interpretation…" if phase == "updating" else ""))
         method = str(context.get("method") or self.interpreter.currentText())
         method = {"ollama": "Full session · local model", "contextual": "Basic phrase analysis",
                   "spacy": "spaCy phrase analysis"}.get(method, method)
@@ -995,6 +1049,8 @@ class MainWindow(QMainWindow):
         if not self._retrieval_seen:
             if phase == "error":
                 heading = "Images: local story understanding needs attention."
+            elif retaining:
+                heading = "Images: continuing fresh searches from the established scene."
             elif phase == "updating":
                 heading = ("Images: the local model is reading the recorded story." if model
                            else "Images: interpreting the recorded speech.")
@@ -1010,6 +1066,7 @@ class MainWindow(QMainWindow):
                 progress = f"{model} · {progress}"
             self._retrieval_message = "\n".join(part for part in (heading, progress, message) if part)[:1200]
             self._refresh_image_status()
+        self._update_feedback_controls()
 
     @staticmethod
     def _format_retrieval(payload: dict) -> str:
@@ -1074,17 +1131,28 @@ class MainWindow(QMainWindow):
     def _show_image(self, candidate: ImageCandidate | None) -> None:
         displayed = self.canvas.set_image(candidate)
         if candidate is None:
+            self._feedback_frame_token += 1
             self._displayed_candidate = None
             self._image_error = ""
             self.save_button.setEnabled(False)
             self.source_label.setText("Source attribution appears with each image.")
             self._refresh_image_status()
+            self._update_feedback_controls()
             return
         if not displayed:
             self.slideshow.discard(candidate, self._displayed_candidate)
+            reject = getattr(self.pipeline, "reject_image", None)
+            if reject is not None:
+                try:
+                    reject(candidate)
+                except Exception as exc:
+                    self._error(f"Could not discard unreadable image: {exc}")
             self.save_button.setEnabled(self._displayed_candidate is not None and self._displayed_candidate.path.is_file())
+            self._update_feedback_controls()
             return
+        self._feedback_frame_token += 1
         self._displayed_candidate = candidate
+        self._update_feedback_controls()
         self._image_error = ""
         self.save_button.setEnabled(True)
         self._refresh_image_status()
@@ -1101,6 +1169,68 @@ class MainWindow(QMainWindow):
             f"<br><span style='color:#93a6b8'>{escape(candidate.authenticity)} · relevance {candidate.score:.2f}</span>"
         )
         self.source_label.setToolTip(candidate.source_url)
+
+    def _update_feedback_controls(self) -> None:
+        if not hasattr(self, "good_fit_button"):
+            return
+        candidate, topic = self._displayed_candidate, self._feedback_topic
+        usable = bool(candidate is not None and candidate.path.is_file() and topic is not None and topic.query
+                      and callable(getattr(self.pipeline, "record_feedback", None)))
+        pending = any(token == self._feedback_frame_token for _, token, _, _ in self._feedback_pending.values())
+        vote = None
+        lookup = getattr(self.pipeline, "get_feedback_vote", None)
+        if usable and callable(lookup):
+            try:
+                vote = lookup(topic, candidate)
+            except Exception:
+                pass
+        self.good_fit_button.setChecked(vote is True)
+        self.poor_fit_button.setChecked(vote is False)
+        self.good_fit_button.setEnabled(usable and not pending)
+        self.poor_fit_button.setEnabled(usable and not pending)
+        self.feedback_status_label.setText(
+            "Saving vote locally…" if pending else
+            "Saved locally · good fit. You can change your vote." if vote is True else
+            "Saved locally · poor fit. You can change your vote." if vote is False else
+            "Vote on how the image fits the story." if usable else
+            "Votes need a displayed image and spoken context."
+        )
+
+    def vote_current_image(self, positive: bool) -> None:
+        candidate, topic = self._displayed_candidate, self._feedback_topic
+        self._update_feedback_controls()
+        button = self.good_fit_button if positive else self.poor_fit_button
+        if not button.isEnabled():
+            return
+        try:
+            lookup = getattr(self.pipeline, "get_feedback_vote", None)
+            if callable(lookup) and lookup(topic, candidate) is positive:
+                return
+            request_id = self.pipeline.record_feedback(candidate, positive, topic)
+            self._feedback_pending[str(request_id)] = (candidate.image_url, self._feedback_frame_token, topic, positive)
+            self._update_feedback_controls()
+        except Exception:
+            self.feedback_status_label.setText("Could not save this vote locally. Try again.")
+
+    def _feedback_saved(self, payload: dict) -> None:
+        pending = self._feedback_pending.pop(str(payload.get("request_id")), None)
+        if pending is None:
+            return
+        image_url, token, topic, positive = pending
+        current = self._displayed_candidate
+        if current is None or current.image_url != image_url or token != self._feedback_frame_token:
+            return
+        self._update_feedback_controls()
+        if not payload.get("success"):
+            self.feedback_status_label.setText("Could not save this vote locally. Try again.")
+            return
+        self.feedback_status_label.setText(
+            "Saved locally for the previous context." if self._feedback_topic is not topic else
+            "Saved locally · local learning updated." if payload.get("learned") else
+            "Saved locally · image-model learning is not available yet."
+        )
+        if not positive:
+            self.next_image()
 
     def _open_source(self, value: str) -> None:
         url = safe_source_url(value)
@@ -1185,9 +1315,13 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._error(f"Could not delete history: {exc}")
 
-    def toggle_fullscreen(self) -> None:
+    def toggle_fullscreen(self, with_title: bool | None = None) -> None:
         if self._fullscreen:
-            self.leave_fullscreen()
+            if with_title is not None and bool(with_title) != self._fullscreen_title:
+                self._fullscreen_title = bool(with_title)
+                self.canvas.set_title_overlay(self._fullscreen_title)
+            else:
+                self.leave_fullscreen()
             return
         self._normal_geometry = self.saveGeometry()
         self._normal_rect = self.geometry()
@@ -1201,6 +1335,8 @@ class MainWindow(QMainWindow):
                   self.status_label, self.image_status_label)
         self._fullscreen_visibility = [(widget, not widget.isHidden()) for widget in chrome]
         self._fullscreen = True
+        self._fullscreen_title = bool(with_title)
+        self.canvas.set_title_overlay(self._fullscreen_title)
         for widget, _ in self._fullscreen_visibility:
             widget.hide()
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1222,6 +1358,8 @@ class MainWindow(QMainWindow):
         if not self._fullscreen:
             return
         self._fullscreen = False
+        self._fullscreen_title = False
+        self.canvas.set_title_overlay(False)
         self.showNormal()
         outer = self.centralWidget().layout()
         margins, spacing, stage_spacing, handle_width = self._fullscreen_layout
