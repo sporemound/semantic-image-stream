@@ -165,3 +165,32 @@ def test_invalid_chunk_never_enters_native_model(monkeypatch):
         transcriber.transcribe(AudioChunk(np.ones(31 * 16000), 0))
     with pytest.raises(ValueError, match="non-finite"):
         transcriber.transcribe(AudioChunk(np.array([np.nan], dtype=np.float32), 0))
+
+
+def test_cached_model_avoids_remote_metadata_request(monkeypatch):
+    options = []
+    class Model:
+        def __init__(self, model, **kwargs):
+            options.append(kwargs)
+        def transcribe(self, samples, **kwargs):
+            return iter([_segment()]), types.SimpleNamespace(language="en")
+    _install_model(monkeypatch, Model)
+    assert FasterWhisperTranscriber(Settings(whisper_device="cpu")).transcribe(_chunk())
+    assert len(options) == 1
+    assert options[0]["local_files_only"] is True
+
+
+def test_only_cache_miss_enables_initial_download(monkeypatch):
+    from huggingface_hub.errors import LocalEntryNotFoundError
+    options, statuses = [], []
+    class Model:
+        def __init__(self, model, **kwargs):
+            options.append(kwargs["local_files_only"])
+            if kwargs["local_files_only"]:
+                raise LocalEntryNotFoundError("Weights are not cached")
+        def transcribe(self, samples, **kwargs):
+            return iter([_segment()]), types.SimpleNamespace(language="en")
+    _install_model(monkeypatch, Model)
+    assert FasterWhisperTranscriber(Settings(whisper_device="cpu"), on_status=statuses.append).transcribe(_chunk())
+    assert options == [True, False]
+    assert any("Downloading Whisper" in status for status in statuses)

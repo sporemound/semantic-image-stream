@@ -70,15 +70,24 @@ class FasterWhisperTranscriber:
     def _construct(self, device):
         self._check_cancel()
         from faster_whisper import WhisperModel
+        from huggingface_hub.utils import LocalEntryNotFoundError
         compute = self.settings.whisper_compute_type
         if compute == "auto":
             compute = "float16" if device == "cuda" else "int8"
         elif device == "cpu" and compute in {"float16", "int8_float16"}:
             compute = "int8"
-        self.on_status(f"Loading local Whisper {self.settings.whisper_model} on {device}; first use downloads model weights")
-        model = WhisperModel(self.settings.whisper_model, device=device, compute_type=compute,
-                             download_root=str(Path(self.settings.cache_dir) / "models"),
-                             num_workers=1, cpu_threads=4)
+        self.on_status(f"Loading local Whisper {self.settings.whisper_model} on {device}")
+        options = dict(device=device, compute_type=compute,
+                       download_root=str(Path(self.settings.cache_dir) / "models"),
+                       num_workers=1, cpu_threads=4)
+        # A downloaded speech model should start without an internet metadata
+        # request. Offline-cache misses alone trigger the first-use download.
+        try:
+            model = WhisperModel(self.settings.whisper_model, local_files_only=True, **options)
+        except LocalEntryNotFoundError:
+            self._check_cancel()
+            self.on_status(f"Downloading Whisper {self.settings.whisper_model}; transcription starts when it is ready")
+            model = WhisperModel(self.settings.whisper_model, local_files_only=False, **options)
         self._check_cancel()
         self._model = model
         self.device = device

@@ -56,6 +56,18 @@ A reported empty preview with working transcription revealed a scheduler starvat
 
 The updated suite passed 144 tests and lint. An actual prerecorded astronomy → local Whisper → live Wikimedia → Qt preview check displayed an attributed source image after 11.92 seconds using metadata ranking at the unchanged 0.30 threshold. This is a reproduction check of the corrected pipeline; the user's existing running process must be restarted to load the updated code.
 
+## Speech startup and fullscreen follow-up
+
+Saved-device discovery now gates Start and retains the requested input instead of replacing it with a temporary default. Cached Whisper models are opened locally before attempting a first-use download. CPU CLIP loading/inference does not acquire the CUDA transcription lock. An image-ranking exception preserves the speech/semantic workers, keeps the selected ranker and threshold, cancels the failed image batch and retries on a bounded clock or new topic. Audio status distinguishes recognition in progress from captured audio with no recognized speech.
+
+The user's downloaded turbo model resolved by its model name with local-only cache access and transcribed the first original astronomy fixture chunk on CUDA/float16. Recognition returned the expected sentence with timestamps 0.00–4.26 seconds. A complete desktop pipeline check then used actual turbo CUDA inference, actual CPU CLIP, the saved 0.30 threshold and original astronomy speech. Transcript, topic and a decoded attributed Milky Way image appeared after 21.14 seconds; the image scored 0.33524. A further transcript update arrived at 19.25 seconds while CPU CLIP was loading from 14.58–20.63 seconds. This confirms the CPU image model no longer holds up CUDA recognition.
+
+That desktop check supplied previously retrieved genuine source images through a diagnostic cached-source provider and a separate cache. It made no live provider calls or model/image downloads. The actual microphone has been checked for available input and signal, but this fixture check does not confirm intelligible live speech or resolve the user's running process. Their audio/model choices were preserved. Live image-search validation was blocked by automatic approval review; earlier live-provider results remain documented above.
+
+Fullscreen now hides all controls/status panels and removes layout margins and minimum-size constraints so the canvas fills the selected display. Regression checks verify full-window canvas geometry and pixels, Escape restoration, prior hidden attribution and maximized-window restoration on an offscreen display. Physical multi-monitor fullscreen remains unvalidated.
+
+The complete updated local suite passed 157 tests, and lint passed.
+
 ## Next milestones
 
 1. Benchmark real recordings and noisy live speech; add multilingual semantic analyzers and better relationship/negation handling.

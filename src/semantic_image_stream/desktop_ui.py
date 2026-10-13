@@ -8,7 +8,7 @@ import sys
 import threading
 from urllib.parse import urlsplit
 
-from PySide6.QtCore import QObject, Qt, QUrl, Signal
+from PySide6.QtCore import QObject, QSignalBlocker, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
@@ -79,6 +79,12 @@ class MainWindow(QMainWindow):
         self.pipeline = None
         self._session = 0
         self._device_request = 0
+        self._devices_loading = False
+        self._device_selection_error = ""
+        self._device_mode = ""
+        self._device_preferences = {settings.audio_mode: settings.audio_device}
+        self._device_preferred = settings.audio_device
+        self._device_choices: set[int] = set()
         self._closing = False
         self._monitoring = False
         self._stopping = False
@@ -140,6 +146,7 @@ class MainWindow(QMainWindow):
         self.body = QSplitter(Qt.Orientation.Horizontal)
         layout.addWidget(self.body, 1)
         stage = QWidget()
+        self.stage = stage
         stage_layout = QVBoxLayout(stage)
         stage_layout.setContentsMargins(0, 0, 0, 0)
         stage_layout.setSpacing(8)
@@ -169,6 +176,7 @@ class MainWindow(QMainWindow):
         self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self.save_current)
         self.fullscreen_button = QPushButton("Fullscreen")
+        self.fullscreen_button.setToolTip("Show images across the selected display. F11 toggles; Escape returns to controls.")
         self.fullscreen_button.clicked.connect(self.toggle_fullscreen)
         self.queue_label = QLabel("0 images ready")
         self.queue_label.setObjectName("queue")
@@ -205,6 +213,7 @@ class MainWindow(QMainWindow):
         device_layout.setContentsMargins(0, 0, 0, 0)
         self.audio_device = QComboBox()
         self.audio_device.addItem("Default device", None)
+        self.audio_device.currentIndexChanged.connect(self._device_selected)
         self.refresh_devices = QPushButton("↻")
         self.refresh_devices.setToolTip("Refresh connected audio devices")
         self.refresh_devices.setFixedWidth(32)
@@ -353,12 +362,13 @@ class MainWindow(QMainWindow):
         self.canvas.interval = self.interval.value()
         self.canvas.transition = self.transition.currentData()
         self.canvas.transition_seconds = self.settings.transition_seconds
-        self.source_label.setVisible(self.attribution.isChecked())
+        self.source_label.setVisible(self.attribution.isChecked() and not self._fullscreen)
 
     def _read_settings(self) -> Settings:
         settings = deepcopy(self.settings)
         for name, value in {
-            "audio_mode": self.audio_mode.currentData(), "audio_device": self.audio_device.currentData(),
+            "audio_mode": self.audio_mode.currentData(),
+            "audio_device": self._device_preferred if self._devices_loading else self.audio_device.currentData(),
             "audio_file": self.audio_file.text().strip(), "whisper_model": self.model.currentText().strip(),
             "whisper_device": self.whisper_device.currentData(), "ranking": self.ranking.currentData(),
             "providers": [name for name, check in self.provider_boxes.items() if check.isChecked()],
@@ -374,20 +384,27 @@ class MainWindow(QMainWindow):
         return settings.validate()
 
     def _load_devices(self, *args) -> None:
+        if self._monitoring or self._stopping:
+            return
         mode = self.audio_mode.currentData()
-        self.audio_file.setEnabled(mode == "file" and not self._monitoring)
-        self.choose_audio.setEnabled(mode == "file" and not self._monitoring)
-        self.audio_device.setEnabled(mode != "file" and not self._monitoring)
-        self.refresh_devices.setEnabled(mode != "file" and not self._monitoring)
         self._device_request += 1
         token = self._device_request
+        self._device_mode = mode
+        self._device_selection_error = ""
         if mode == "file":
+            self._devices_loading = False
+            self._update_controls()
+            self._device_status("Choose an audio recording, then start monitoring.")
             return
-        preferred = self.audio_device.currentData()
-        if preferred is None:
-            preferred = self.settings.audio_device
-        self.audio_device.clear()
-        self.audio_device.addItem("Default device", None)
+        preferred = self._device_preferences.get(mode)
+        self._device_preferred = preferred
+        self._devices_loading = True
+        self._device_choices.clear()
+        with QSignalBlocker(self.audio_device):
+            self.audio_device.clear()
+            self.audio_device.addItem("Loading audio devices…", preferred)
+        self._update_controls()
+        self._device_status("Loading audio devices. Your selected input is preserved.")
 
         def work():
             try:
@@ -405,17 +422,47 @@ class MainWindow(QMainWindow):
         if token != self._device_request or self._closing:
             return
         devices, preferred = payload
-        self.audio_device.clear()
-        self.audio_device.addItem("Default device", None)
-        for device in devices:
-            self.audio_device.addItem(device.name + (" · default" if device.is_default else ""), device.index)
-        index = self.audio_device.findData(preferred)
-        if index >= 0:
-            self.audio_device.setCurrentIndex(index)
-        elif preferred is not None:
-            self.status_label.setText("Selected device is unavailable; using the default device.")
+        self._devices_loading = False
+        self._device_choices = {device.index for device in devices}
+        self._device_selection_error = ""
+        with QSignalBlocker(self.audio_device):
+            self.audio_device.clear()
+            self.audio_device.addItem("Default device", None)
+            for device in devices:
+                self.audio_device.addItem(device.name + (" · default" if device.is_default else ""), device.index)
+            index = self.audio_device.findData(preferred)
+            if preferred is not None and index < 0:
+                self.audio_device.addItem(f"Unavailable selected device ({preferred})", preferred)
+                index = self.audio_device.count() - 1
+                self._device_selection_error = "Selected audio input is unavailable. Refresh devices or choose another input."
+            if index >= 0:
+                self.audio_device.setCurrentIndex(index)
         if error:
-            self.status_label.setText(f"Audio device discovery: {error}")
+            self._device_selection_error = f"Could not load audio devices: {error}. Select Refresh to try again."
+        elif not devices:
+            self._device_selection_error = "No compatible audio inputs found. Connect an input and refresh devices."
+        self._update_controls()
+        if self._device_selection_error:
+            self._error(self._device_selection_error)
+        elif not self._monitoring and not self._stopping:
+            self._device_status("Audio input ready · start monitoring when ready")
+
+    def _device_selected(self, *args) -> None:
+        if self._devices_loading or self._monitoring or self._stopping:
+            return
+        selected = self.audio_device.currentData()
+        self._device_preferences[self._device_mode or self.audio_mode.currentData()] = selected
+        if self._device_choices and (selected is None or selected in self._device_choices):
+            self._device_selection_error = ""
+            self._device_status("Audio input ready · start monitoring when ready")
+        self._update_controls()
+
+    def _device_status(self, message: str) -> None:
+        self._last_error = ""
+        self.status_label.setObjectName("status")
+        self.status_label.setText(message)
+        self.status_label.style().unpolish(self.status_label)
+        self.status_label.style().polish(self.status_label)
 
     def _choose_audio(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Choose speech recording", "", "Audio files (*.wav *.mp3 *.flac *.m4a *.ogg);;All files (*)")
@@ -425,6 +472,13 @@ class MainWindow(QMainWindow):
     def start_monitoring(self) -> None:
         if self._monitoring or self._stopping:
             return
+        if self.audio_mode.currentData() != "file":
+            if self._devices_loading:
+                self._device_status("Loading audio devices. Wait for your selected input to be ready.")
+                return
+            if self._device_selection_error:
+                self._error(self._device_selection_error)
+                return
         try:
             from .engine import Pipeline
             self.settings = self._read_settings()
@@ -460,7 +514,8 @@ class MainWindow(QMainWindow):
 
     def _update_controls(self) -> None:
         active = self._monitoring or self._stopping
-        self.start_button.setEnabled(not active)
+        device_ready = self.audio_mode.currentData() == "file" or not (self._devices_loading or self._device_selection_error)
+        self.start_button.setEnabled(not active and device_ready)
         self.stop_button.setEnabled(self._monitoring and not self._stopping)
         self.clear_cache_button.setEnabled(not active)
         self.clear_history_button.setEnabled(not active)
@@ -470,7 +525,7 @@ class MainWindow(QMainWindow):
             is_file = self.audio_mode.currentData() == "file"
             self.audio_file.setEnabled(is_file)
             self.choose_audio.setEnabled(is_file)
-            self.audio_device.setEnabled(not is_file)
+            self.audio_device.setEnabled(not is_file and not self._devices_loading)
             self.refresh_devices.setEnabled(not is_file)
 
     def _handle_event(self, session: int, kind: str, payload) -> None:
@@ -684,10 +739,25 @@ class MainWindow(QMainWindow):
             self.leave_fullscreen()
             return
         self._normal_geometry = self.saveGeometry()
+        self._normal_rect = self.geometry()
+        self._was_maximized = self.isMaximized()
+        self._normal_minimum = self.minimumSize()
+        self._canvas_minimum = self.canvas.minimumSize()
+        outer = self.centralWidget().layout()
+        stage_layout = self.stage.layout()
+        self._fullscreen_layout = (outer.getContentsMargins(), outer.spacing(), stage_layout.spacing(), self.body.handleWidth())
+        chrome = (self.header, self.sidebar, self.topic_label, self.source_label, self.transport,
+                  self.status_label, self.image_status_label)
+        self._fullscreen_visibility = [(widget, not widget.isHidden()) for widget in chrome]
         self._fullscreen = True
-        self.header.hide()
-        self.sidebar.hide()
-        self.status_label.hide()
+        for widget, _ in self._fullscreen_visibility:
+            widget.hide()
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        stage_layout.setSpacing(0)
+        self.body.setHandleWidth(0)
+        self.setMinimumSize(0, 0)
+        self.canvas.setMinimumSize(0, 0)
         self.fullscreen_button.setText("Exit fullscreen")
         screens = QApplication.screens()
         index = self.display.currentData() or 0
@@ -702,11 +772,22 @@ class MainWindow(QMainWindow):
             return
         self._fullscreen = False
         self.showNormal()
+        outer = self.centralWidget().layout()
+        margins, spacing, stage_spacing, handle_width = self._fullscreen_layout
+        outer.setContentsMargins(*margins)
+        outer.setSpacing(spacing)
+        self.stage.layout().setSpacing(stage_spacing)
+        self.body.setHandleWidth(handle_width)
+        self.canvas.setMinimumSize(self._canvas_minimum)
+        self.setMinimumSize(self._normal_minimum)
+        for widget, visible in self._fullscreen_visibility:
+            widget.setVisible(visible)
         if self._normal_geometry is not None:
             self.restoreGeometry(self._normal_geometry)
-        self.header.show()
-        self.sidebar.show()
-        self.status_label.show()
+        if self._was_maximized:
+            self.showMaximized()
+        else:
+            self.setGeometry(self._normal_rect)
         self.fullscreen_button.setText("Fullscreen")
 
     def closeEvent(self, event) -> None:

@@ -198,6 +198,7 @@ class Pipeline:
             except queue.Empty:
                 await asyncio.sleep(0.1)
                 continue
+            self.emit("status", "Recognizing captured audio locally…")
             segments = await _background(self._transcriber.transcribe, chunk)
             if self.stop_event.is_set():
                 break
@@ -209,6 +210,9 @@ class Pipeline:
                         self._segments.popleft()
                     window = list(self._segments)
                 self.emit("transcript", window)
+                self.emit("status", "Spoken context updated · listening")
+            else:
+                self.emit("status", "Audio received, but no speech was recognized. Listening for the next segment.")
 
     async def _interpret(self, analyzer):
         gate = TopicGate(self.settings.semantic_sensitivity)
@@ -261,7 +265,12 @@ class Pipeline:
             # Rank metadata before prefetch to start with promising source
             # images; retain other candidates for actual multimodal ranking.
             if ranker.name == "metadata":
-                preferred = ranker.rank(self._latest_topic or topic, unique, [])
+                try:
+                    preferred = ranker.rank(self._latest_topic or topic, unique, [])
+                except Exception as exc:
+                    self._report_ranking_failure(ranker, exc, len(unique), 0)
+                    await self._wait_for_search_retry(generation, topic)
+                    continue
                 preferred_urls = {c.image_url for c in preferred}
                 unique = preferred + [c for c in unique if c.image_url not in preferred_urls]
             semaphore = asyncio.Semaphore(3)
@@ -284,6 +293,9 @@ class Pipeline:
                                    f"the {self.settings.relevance_threshold:.2f} minimum.")
                     else:
                         message = f"Downloaded {downloaded} images, but none are new matches for the current discussion."
+                elif phase == "loading":
+                    message = ("Loading the local image relevance model; first use may download weights. "
+                               "Speech monitoring continues.")
                 else:
                     message = f"Checking images · {downloaded} downloaded from {len(unique)} results"
                 self.emit("retrieval", {"phase": phase, "found": len(unique), "downloaded": downloaded,
@@ -314,6 +326,7 @@ class Pipeline:
 
             prepared = []
             best_score = None
+            ranking_failed = False
             tasks = [asyncio.create_task(prepare(c)) for c in unique]
             try:
                 # Publish useful validated images as they arrive. Waiting for
@@ -333,9 +346,18 @@ class Pipeline:
                     # Repeat if context changes while a local model is ranking.
                     while True:
                         current = self._latest_topic or topic
-                        ranked = await _background(ranker.rank, current, prepared, recent)
+                        if ranker.name == "clip" and getattr(ranker, "model", None) is None:
+                            report("loading", len(published), best_score)
+                        try:
+                            ranked = await _background(ranker.rank, current, prepared, recent)
+                        except Exception as exc:
+                            ranking_failed = True
+                            self._report_ranking_failure(ranker, exc, len(unique), downloaded, len(published))
+                            break
                         if current is (self._latest_topic or topic):
                             break
+                    if ranking_failed:
+                        break
                     best_score = max((c.score for c in ranked), default=None)
                     chosen, hashes = [], list(recent)
                     for candidate in ranked:
@@ -360,19 +382,42 @@ class Pipeline:
                     if not task.done():
                         task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
-            if published:
+            if ranking_failed:
+                # The finally block cancelled this batch's remaining downloads.
+                # Keep the ranking diagnostic visible until a genuine retry;
+                # neither the selected ranker nor its threshold is changed.
+                await self._wait_for_search_retry(generation, topic)
+            elif published:
                 report("ready", len(published), best_score)
             else:
                 report("empty", best_score=best_score)
                 self.emit("status", "No new images met the relevance and quality filters. See image status for details.")
                 # New speech topics wake retry immediately rather than waiting
                 # behind the old topic's fixed thirty-second failure delay.
-                end = time.monotonic() + max(30, self.settings.search_interval)
-                while self.topic_queue.empty() and time.monotonic() < end and not self.stop_event.is_set():
-                    await asyncio.sleep(0.1)
-                if generation == self._generation and self.topic_queue.empty():
-                    self.topic_queue.put_nowait((generation, topic))
+                await self._wait_for_search_retry(generation, topic)
             cache.prune(set(self._protected_paths))
+
+    def _report_ranking_failure(self, ranker, error, found, downloaded, accepted=0):
+        # Exception text can include file paths, URLs or private model inputs.
+        # The class name and selected ranking method give a safe diagnostic.
+        name = {"clip": "CLIP", "metadata": "metadata"}.get(ranker.name, "selected")
+        reason = "Local image ranking failed"
+        log.warning("Image ranking failed (%s)", type(error).__name__)
+        message = (f"Local {name} image ranking failed ({type(error).__name__}). "
+                   "Speech monitoring continues; image ranking will retry.")
+        self.emit("retrieval", {"phase": "error", "found": found, "downloaded": downloaded,
+                                "rejected": 1, "accepted": accepted,
+                                "threshold": self.settings.relevance_threshold, "best_score": None,
+                                "failures": {reason: 1}, "message": message})
+
+    async def _wait_for_search_retry(self, generation, topic):
+        # New subjects wake a failed visual batch; unchanged subjects retain
+        # the existing bounded retry delay so a broken local model cannot spin.
+        end = time.monotonic() + max(30, self.settings.search_interval)
+        while self.topic_queue.empty() and time.monotonic() < end and not self.stop_event.is_set():
+            await asyncio.sleep(0.1)
+        if not self.stop_event.is_set() and generation == self._generation and self.topic_queue.empty():
+            self.topic_queue.put_nowait((generation, topic))
 
     def record_displayed(self, image):
         with self._history_lock:

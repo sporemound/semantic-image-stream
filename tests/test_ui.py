@@ -2,19 +2,24 @@
 import os
 import json
 import time
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
 pytest.importorskip("PySide6")
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor, QDesktopServices, QImage
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFileDialog
 
 from semantic_image_stream.configuration import Settings
 from semantic_image_stream.desktop_ui import MainWindow, safe_source_url
 from semantic_image_stream.models import ImageCandidate, Topic, TranscriptSegment
 from semantic_image_stream.slideshow import ImageCanvas, SlideshowController
+from semantic_image_stream.audio_capture import AudioDevice
+import semantic_image_stream.desktop_ui as desktop_ui
 
 
 @pytest.fixture(scope="module")
@@ -315,3 +320,178 @@ def test_canvas_reports_success_or_failure(app, image_factory, tmp_path):
     assert canvas.set_image(None) is True
     assert canvas.current_pixmap.isNull()
     canvas.close()
+
+
+@pytest.fixture
+def delayed_devices_window(app, monkeypatch, tmp_path):
+    """Leave enumeration pending, without opening a native audio endpoint."""
+    workers = []
+    pipelines = []
+
+    class DeferredWorker:
+        def __init__(self, **kwargs):
+            self.target = kwargs["target"]
+
+        def start(self):
+            workers.append(self)
+
+    class NoCapturePipeline:
+        def __init__(self, settings, callback):
+            self.settings = settings
+            self.callback = callback
+            pipelines.append(self)
+
+        def start(self):
+            pass
+
+        def stop(self):
+            self.callback("stopped", None)
+
+    from semantic_image_stream import engine
+    monkeypatch.setattr(desktop_ui, "threading", SimpleNamespace(Thread=DeferredWorker))
+    monkeypatch.setattr(engine, "Pipeline", NoCapturePipeline)
+    widget = MainWindow(Settings(audio_mode="microphone", audio_device=1, cache_dir=str(tmp_path / "cache")))
+    widget.show()
+    app.processEvents()
+    assert len(workers) == 1
+    yield widget, pipelines, workers
+    widget.close()
+    app.processEvents()
+
+
+def test_start_waits_for_saved_device_discovery_without_selecting_default(delayed_devices_window):
+    window, pipelines, _ = delayed_devices_window
+    assert window._devices_loading
+    assert not window.start_button.isEnabled()
+    assert window._read_settings().audio_device == 1
+    window.start_monitoring()
+    assert not pipelines
+    assert window.settings.audio_device == 1
+    devices = [AudioDevice(1, "Selected input", 48000, 2), AudioDevice(2, "Different default", 48000, 2, is_default=True)]
+    window._devices_ready(window._device_request, (devices, 1), "")
+    assert window.start_button.isEnabled()
+    assert window.audio_device.currentData() == 1
+    window.start_monitoring()
+    assert len(pipelines) == 1
+    assert pipelines[0].settings.audio_device == 1
+
+
+def test_unavailable_saved_device_is_preserved_until_user_selects_another(delayed_devices_window):
+    window, pipelines, _ = delayed_devices_window
+    window._devices_ready(window._device_request, ([AudioDevice(2, "Other input", 48000, 2, is_default=True)], 1), "")
+    assert not window.start_button.isEnabled()
+    assert "unavailable" in window.status_label.text().lower()
+    assert window.audio_device.currentData() == 1
+    assert window._read_settings().audio_device == 1
+    window.start_monitoring()
+    assert not pipelines and window.settings.audio_device == 1
+    window.audio_device.setCurrentIndex(window.audio_device.findData(2))
+    assert window.start_button.isEnabled()
+    window.start_monitoring()
+    assert pipelines[0].settings.audio_device == 2
+
+
+def test_discovery_error_preserves_selection_and_refresh_can_recover(delayed_devices_window):
+    window, pipelines, workers = delayed_devices_window
+    window._devices_ready(window._device_request, ([], 1), "Device service unavailable")
+    assert not window.start_button.isEnabled()
+    assert window._read_settings().audio_device == 1
+    assert "Device service unavailable" in window.status_label.text()
+    window._load_devices()
+    assert len(workers) == 2 and window._devices_loading
+    window._devices_ready(window._device_request, ([AudioDevice(1, "Selected input", 48000, 2)], 1), "")
+    assert window.start_button.isEnabled()
+    assert window._last_error == "" and window.status_label.objectName() == "status"
+    window.start_monitoring()
+    assert pipelines[0].settings.audio_device == 1
+
+
+def test_file_mode_starts_immediately_and_ignores_late_device_discovery(delayed_devices_window, tmp_path):
+    window, pipelines, _ = delayed_devices_window
+    pending_token = window._device_request
+    recording = tmp_path / "recording.wav"
+    recording.write_bytes(b"Fixture is not decoded by the no-capture pipeline.")
+    window.audio_mode.setCurrentIndex(window.audio_mode.findData("file"))
+    window.audio_file.setText(str(recording))
+    assert not window._devices_loading and window.start_button.isEnabled()
+    window.start_monitoring()
+    assert pipelines[0].settings.audio_mode == "file"
+    window._devices_ready(pending_token, ([AudioDevice(2, "Late input", 48000, 2)], 2), "")
+    assert window.audio_device.currentData() == 1
+    assert pipelines[0].settings.audio_device == 1
+
+
+def test_stopped_mode_change_waits_for_new_devices_without_reusing_old_index(delayed_devices_window):
+    window, pipelines, workers = delayed_devices_window
+    window._devices_ready(window._device_request, ([AudioDevice(1, "Microphone", 48000, 2)], 1), "")
+    window.start_monitoring()
+    window.stop_monitoring()
+    assert not window._monitoring and not window._stopping
+    window.audio_mode.setCurrentIndex(window.audio_mode.findData("loopback"))
+    assert len(workers) == 2
+    assert not window.start_button.isEnabled()
+    assert window._read_settings().audio_device is None
+    window.start_monitoring()
+    assert len(pipelines) == 1
+    window._devices_ready(window._device_request, ([AudioDevice(25, "Desktop audio", 48000, 2, True, True)], None), "")
+    window.audio_device.setCurrentIndex(window.audio_device.findData(25))
+    window.start_monitoring()
+    assert len(pipelines) == 2
+    assert pipelines[1].settings.audio_mode == "loopback"
+    assert pipelines[1].settings.audio_device == 25
+
+
+def test_fullscreen_canvas_fills_display_and_escape_restores_controls(window, app, image_factory, tmp_path):
+    window.canvas.transition = "cut"
+    image = image_factory()
+    window._handle_event(0, "images", [image])
+    original_rect = window.geometry()
+    original_minimum = window.minimumSize()
+    original_margins = window.centralWidget().layout().getContentsMargins()
+    window.toggle_fullscreen()
+    window.activateWindow()
+    app.processEvents()
+    assert window.isFullScreen()
+    assert window.windowHandle().screen() is QApplication.screens()[window.display.currentData()]
+    assert window.canvas.mapTo(window.centralWidget(), QPoint(0, 0)) == QPoint(0, 0)
+    assert window.canvas.size() == window.centralWidget().size() == window.size()
+    assert window.size() == window.windowHandle().screen().size()
+    for widget in (window.header, window.sidebar, window.topic_label, window.source_label, window.transport,
+                   window.status_label, window.image_status_label, window.pause_button, window.next_button,
+                   window.save_button, window.fullscreen_button):
+        assert not widget.isVisible()
+    # A rendering assertion catches remaining controls, margins, or source bars.
+    rendered = window.grab().toImage()
+    assert rendered.pixelColor(0, 0).red() > 240
+    assert rendered.pixelColor(rendered.width() - 1, rendered.height() - 1).red() > 240
+    assert rendered.save(str(tmp_path / "fullscreen.png"))
+    QTest.keyClick(window, Qt.Key.Key_Escape)
+    app.processEvents()
+    assert not window._fullscreen and not window.isFullScreen()
+    assert window.geometry() == original_rect
+    assert window.minimumSize() == original_minimum
+    assert window.centralWidget().layout().getContentsMargins() == original_margins
+    assert window.header.isVisible() and window.sidebar.isVisible() and window.transport.isVisible()
+    assert window.source_label.isVisible()
+    assert window._displayed_candidate is image
+    assert "CC BY 4.0" in window.source_label.text()
+
+
+def test_fullscreen_restores_hidden_attribution_and_maximized_state(window, app):
+    window.attribution.setChecked(False)
+    window.image_status_label.hide()
+    window.showMaximized()
+    app.processEvents()
+    assert window.isMaximized()
+    window.toggle_fullscreen()
+    app.processEvents()
+    assert window.canvas.size() == window.size()
+    # Presentation changes must not reveal a source bar during fullscreen.
+    window.interval.setValue(11)
+    assert not window.source_label.isVisible()
+    window.leave_fullscreen()
+    app.processEvents()
+    assert window.isMaximized()
+    assert window.source_label.isHidden()
+    assert window.image_status_label.isHidden()
+    assert window.header.isVisible() and window.transport.isVisible()

@@ -24,7 +24,7 @@ Core operation needs an internet connection for image searches/downloads and the
 2. The timestamped transcript and current topic appear beside the stage. Compact queries go to the checked image providers. Existing images are fetched, verified, deduplicated and ranked before display. The first image may take several seconds, longer on first model download.
 3. Adjust image interval, relevance minimum, topic sensitivity, and capture/semantic/search intervals. Input/search/model settings apply to the next monitoring run; presentation interval, transitions and attribution visibility update live.
 4. **Pause images** holds a frame while monitoring continues; **Next image** advances manually. The image history can revisit earlier slides. Source links open the original attribution page. **Save image + attribution** exports the verified raster and a JSON file with creator, license and source URLs.
-5. Choose a fullscreen display and press **Fullscreen** or **F11**. **Escape** restores the normal window; **Space** pauses/resumes and **Right arrow** advances.
+5. Choose a fullscreen display and press **Fullscreen** or **F11**. The slideshow fills the selected display, with controls and status panels hidden. **Escape** restores the normal window and attribution; **Space** pauses/resumes and **Right arrow** advances.
 6. **Stop** ends monitoring while keeping the current slide. Completed recording replay also leaves images visible until Stop. Deletion controls are enabled while stopped.
 
 Microphone input is an alternative. To test a real recording or the included original synthetic speech fixtures:
@@ -36,7 +36,11 @@ Microphone input is an alternative. To test a real recording or the included ori
 
 Device indices can change after reconnecting devices. Use **↻** to refresh. Capture interruptions retry a limited number of times and surface failures in the status area. During silence or failed searches, the current image stays visible. When a topic's prefetched queue is exhausted, the current image is retained until a new topic/search yields more imagery.
 
+Start becomes available when audio-device discovery finishes. A missing saved input is shown explicitly; select an available input or refresh the list. Downloaded Whisper models load from the local cache first. The bottom status distinguishes receiving audio, loading recognition, and receiving audio without recognized speech. After installing an update, close the entire app and reopen it before starting monitoring.
+
 Images preview as soon as a validated result meets the relevance minimum, while remaining images load. The image-status line shows **Found / Loaded / Ready / Skipped** counts and explains rate limits, resolution rejection, insufficient relevance, pause, or display errors. Transcription can continue independently while an image source is unavailable. Topic changes recheck downloaded candidates against current context instead of discarding an entire batch.
+
+An image relevance-model failure appears in image status while speech monitoring continues; the selected ranking method and relevance minimum are preserved. CPU image ranking does not acquire the transcription GPU's lock.
 
 ## Local relevance options
 

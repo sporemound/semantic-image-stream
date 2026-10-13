@@ -28,7 +28,9 @@ Metadata ranking requires a meaningful query-token overlap and rejects unrelated
 
 ## GPU and shutdown
 
-Whisper uses CUDA if available, otherwise CPU int8; runtime CUDA/library/memory failures retry the current chunk on CPU. CLIP defaults to CPU. A shared lock serializes CUDA Whisper and CLIP inference, but resident models still consume VRAM. Prefer base/small Whisper plus CPU CLIP on an 8 GB GPU. Native model constructors and decoder calls cannot be forcibly cancelled; daemon model workers avoid blocking window closure, check cancellation around native calls, and do not publish after stop.
+Whisper uses CUDA if available, otherwise CPU int8; runtime CUDA/library/memory failures retry the current chunk on CPU. Cached Whisper weights load without remote metadata requests; only a cache miss enables first-use downloading. CLIP defaults to CPU and does not take the GPU lock in that mode. A shared lock serializes CUDA Whisper and CUDA CLIP inference, but resident models still consume VRAM. Prefer base/small Whisper plus CPU CLIP on an 8 GB GPU. Native model constructors and decoder calls cannot be forcibly cancelled; daemon model workers avoid blocking window closure, check cancellation around native calls, and do not publish after stop.
+
+Audio-device discovery gates monitoring startup and preserves the saved input while enumeration is pending. A missing input requires a new selection rather than silently changing capture devices. Ranking failures are reported by the image worker and retried without stopping the speech and semantic workers or changing the chosen ranking method.
 
 The initial Linux path supports microphone capture and selecting an available PulseAudio/PipeWire monitor input. WASAPI is Windows-only. The UI and provider interfaces are portable; Linux system-audio support is not yet a turnkey feature.
 

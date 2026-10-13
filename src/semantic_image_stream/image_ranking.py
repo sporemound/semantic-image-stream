@@ -1,5 +1,6 @@
 """Local metadata baseline and optional genuine CLIP image/text embeddings."""
 from __future__ import annotations
+from contextlib import nullcontext
 from pathlib import Path
 import math
 import threading
@@ -61,6 +62,7 @@ class ClipRanker(MetadataRanker):
         self.gpu_lock = gpu_lock or threading.Lock()
         self.model = None
         self.processor = None
+        self.device = settings.clip_device
 
     def _load(self):
         try:
@@ -84,7 +86,10 @@ class ClipRanker(MetadataRanker):
         candidates = [c for c in candidates if not is_duplicate(c.phash, recent)]
         if not candidates:
             return []
-        with self.gpu_lock:
+        # CPU model loading/inference must never pause CUDA speech recognition.
+        # In particular, a stopped CPU model download can outlive its session.
+        access = self.gpu_lock if self.settings.clip_device == "cuda" else nullcontext()
+        with access:
             if self.model is None:
                 self._load()
             similarities = []
