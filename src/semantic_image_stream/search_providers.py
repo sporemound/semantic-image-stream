@@ -22,7 +22,7 @@ from .configuration import Settings
 from .models import ImageCandidate
 
 log = logging.getLogger(__name__)
-USER_AGENT = "SemanticImageStream/0.2.0 (https://github.com/sporemound/semantic-image-stream; https://github.com/sporemound)"
+USER_AGENT = "SemanticImageStream/0.2.1 (https://github.com/sporemound/semantic-image-stream; https://github.com/sporemound)"
 UNKNOWN_LICENSE = "Unknown — check source before reuse"
 MAX_METADATA_BYTES = 2_000_000
 _GENERATED = re.compile(

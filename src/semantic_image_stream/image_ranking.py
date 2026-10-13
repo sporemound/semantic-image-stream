@@ -12,6 +12,12 @@ from urllib.parse import urlsplit
 from .models import ImageCandidate, Topic
 from .semantic_analysis import tokens
 
+CLIP_INITIALIZATION_LOCK = threading.Lock()
+
+
+class ClipLoadError(RuntimeError):
+    """Controlled, path/transcript-free diagnostics for local CLIP loading."""
+
 
 def _cached_encoder_snapshot(settings):
     model_cache = Path(settings.cache_dir) / "models" / "clip"
@@ -127,9 +133,35 @@ class ClipRanker(MetadataRanker):
             raise RuntimeError("The frozen CLIP encoder is not cached locally. Install its weights before local relevance training.")
         source = str(complete) if complete else self.settings.clip_model
         options = dict(cache_dir=model_cache, trust_remote_code=False, local_files_only=complete is not None)
-        self.processor = CLIPProcessor.from_pretrained(source, use_fast=False, **options)
         model_options = {"use_safetensors": (complete / "model.safetensors").is_file()} if complete else {}
-        self.model = CLIPModel.from_pretrained(source, **model_options, **options).to(self.device).eval()
+        # Transformers' empty-weight initialization temporarily changes global
+        # torch parameter constructors. Different stopped/current CPU workers
+        # must never overlap those constructors or leave loaded weights on meta.
+        with CLIP_INITIALIZATION_LOCK:
+            if self.model is not None:
+                return
+            self.processor = None
+            try:
+                processor = CLIPProcessor.from_pretrained(source, use_fast=False, **options)
+                model, loading = CLIPModel.from_pretrained(source, output_loading_info=True,
+                                                           **model_options, **options)
+                if not isinstance(loading, dict):
+                    raise ClipLoadError("CLIP could not verify its cached weights. Restart monitoring to retry safely.")
+                # These deterministic position indices are nonpersistent buffers,
+                # not trained weights, in the official CLIP implementation.
+                generated = {"text_model.embeddings.position_ids", "vision_model.embeddings.position_ids"}
+                missing = [key for key in loading.get("missing_keys", ()) if key not in generated]
+                if missing or loading.get("mismatched_keys") or loading.get("error_msgs"):
+                    raise ClipLoadError("CLIP cached weights are incomplete or incompatible. A complete cached model is required.")
+                if any(getattr(value, "is_meta", False) or getattr(getattr(value, "device", None), "type", "") == "meta"
+                       for value in (*model.parameters(), *model.buffers())):
+                    raise ClipLoadError("CLIP weights were not fully materialized. Restart the app to retry safely.")
+                model = model.to(self.device).eval()
+            except NotImplementedError:
+                raise ClipLoadError("CLIP could not finish local model initialization. Restart the app to retry safely.") from None
+            # Publish only a fully loaded model. Failed attempts leave model=None
+            # so the next attempt can safely reload the original cached weights.
+            self.processor, self.model = processor, model
 
     def rank(self, topic, candidates, recent):
         import torch

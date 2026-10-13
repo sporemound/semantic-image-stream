@@ -884,6 +884,9 @@ class Pipeline:
         log.warning("Image ranking failed (%s)", type(error).__name__)
         message = (f"Local {name} image ranking failed ({type(error).__name__}). "
                    "Speech monitoring continues; image ranking will retry.")
+        from .image_ranking import ClipLoadError
+        if isinstance(error, ClipLoadError):
+            message += " " + str(error)
         self.emit("retrieval", {"phase": "error", "found": found, "downloaded": downloaded,
                                 "rejected": 1, "accepted": accepted,
                                 "threshold": self.settings.relevance_threshold, "best_score": None,

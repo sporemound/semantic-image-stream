@@ -94,7 +94,15 @@ def test_complete_cached_clip_snapshot_wins_over_newer_partial_download(tmp_path
         @classmethod
         def from_pretrained(cls, source, **options):
             calls.append((source, options))
+            if options.get("output_loading_info"):
+                return cls(), {"missing_keys": [], "mismatched_keys": [], "error_msgs": []}
             return cls()
+
+        def parameters(self):
+            return ()
+
+        def buffers(self):
+            return ()
 
         def to(self, device):
             return self
