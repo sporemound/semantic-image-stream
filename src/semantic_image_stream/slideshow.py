@@ -22,6 +22,7 @@ class SlideshowController(QObject):
         self.current: ImageCandidate | None = None
         self.history: deque[ImageCandidate] = deque(maxlen=60)
         self.pending: deque[ImageCandidate] = deque(maxlen=60)
+        self._playlist: dict[str, ImageCandidate] = {}
         self._seen: set[str] = set()
         self._generation = ""
         self.paused = False
@@ -35,22 +36,50 @@ class SlideshowController(QObject):
         return candidate.image_url or candidate.local_path
 
     def set_interval(self, seconds: float) -> None:
-        self.timer.setInterval(max(1000, int(seconds * 1000)))
+        milliseconds = max(1000, int(seconds * 1000))
+        if milliseconds != self.timer.interval():
+            self.timer.setInterval(milliseconds)
+
+    @property
+    def replay_count(self) -> int:
+        """Number of usable images approved for the current subject."""
+        return sum(candidate.path.is_file() for candidate in self._playlist.values())
+
+    def set_topic(self, generation: str) -> None:
+        """Stop replaying a prior subject as soon as a new subject is accepted."""
+        if generation != self._generation:
+            self.reset_playback(generation)
+
+    def reset_playback(self, generation: str = "") -> None:
+        """Keep the displayed frame and history, but discard future subject playback."""
+        self.pending.clear()
+        self._playlist.clear()
+        self._seen.clear()
+        self._generation = generation
+        self.queue_changed.emit(0)
 
     def set_queue(self, images: list[ImageCandidate], generation: str = "") -> None:
-        """Replace future images; preserve the current frame during topic changes."""
-        if generation != self._generation:
-            self._seen.clear()
-            self._generation = generation
+        """Merge progressive results and retain a bounded playlist for this topic."""
+        self.set_topic(generation)
         unique: dict[str, ImageCandidate] = {}
-        current_id = self.identity(self.current) if self.current else None
         for candidate in images:
             identity = self.identity(candidate)
-            if identity != current_id and identity not in self._seen and candidate.path.is_file():
+            if candidate.path.is_file():
                 unique.setdefault(identity, candidate)
             if len(unique) == 60:
                 break
-        self.pending = deque(unique.values(), maxlen=60)
+        pending_ids = {self.identity(candidate) for candidate in self.pending}
+        for identity, candidate in unique.items():
+            self._playlist[identity] = candidate
+            if identity not in self._seen and identity not in pending_ids:
+                self.pending.append(candidate)
+                pending_ids.add(identity)
+            if len(self._playlist) > 60:
+                oldest = next(iter(self._playlist))
+                self._playlist.pop(oldest)
+        self._seen.intersection_update(self._playlist)
+        self.pending = deque((self._playlist[self.identity(candidate)] for candidate in self.pending
+                              if self.identity(candidate) in self._playlist), maxlen=60)
         self.queue_changed.emit(len(self.pending))
         if self.current is None and not self.paused:
             self.advance()
@@ -65,21 +94,51 @@ class SlideshowController(QObject):
                 self.advance()
         self.queue_changed.emit(len(self.pending))
 
+    def discard(self, candidate: ImageCandidate, previous: ImageCandidate | None = None) -> None:
+        """Remove a file Qt could not decode, preserving the actual displayed frame."""
+        identity = self.identity(candidate)
+        self._playlist.pop(identity, None)
+        self._seen.discard(identity)
+        self.pending = deque((image for image in self.pending if self.identity(image) != identity), maxlen=60)
+        self.history = deque((image for image in self.history if self.identity(image) != identity), maxlen=60)
+        if self.current is not None and self.identity(self.current) == identity:
+            self.current = previous
+        self.history_changed.emit(list(self.history))
+        self.queue_changed.emit(len(self.pending))
+
     def advance(self, manual: bool = False) -> None:
         if self.paused and not manual:
             return
-        while self.pending:
-            candidate = self.pending.popleft()
-            if not candidate.path.is_file():
-                continue
+        candidate = None
+        while self.pending and candidate is None:
+            next_candidate = self.pending.popleft()
+            if next_candidate.path.is_file():
+                identity = self.identity(next_candidate)
+                if self.current and identity == self.identity(self.current):
+                    self._seen.add(identity)
+                else:
+                    candidate = next_candidate
+            else:
+                self._playlist.pop(self.identity(next_candidate), None)
+                self._seen.discard(self.identity(next_candidate))
+        if candidate is None:
+            self._playlist = {identity: image for identity, image in self._playlist.items() if image.path.is_file()}
+            self._seen.intersection_update(self._playlist)
+            if len(self._playlist) >= 2:
+                current_id = self.identity(self.current) if self.current else None
+                candidate = next((image for identity, image in self._playlist.items() if identity != current_id), None)
+        if candidate is not None:
             self.current = candidate
-            self._seen.add(self.identity(candidate))
+            identity = self.identity(candidate)
+            self._seen.add(identity)
+            # Moving displayed items to the end makes replay a fair rotation.
+            self._playlist.pop(identity, None)
+            self._playlist[identity] = candidate
             self.history.append(candidate)
             self.current_changed.emit(candidate)
             self.history_changed.emit(list(self.history))
             if not self.paused:
                 self.timer.start()
-            break
         self.queue_changed.emit(len(self.pending))
 
     def select_history(self, index: int) -> None:
@@ -96,8 +155,7 @@ class SlideshowController(QObject):
 
     def clear(self) -> None:
         self.current = None
-        self.pending.clear()
-        self._seen.clear()
+        self.reset_playback()
         self.clear_history()
         self.current_changed.emit(None)
         self.queue_changed.emit(0)

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from .configuration import Settings
 from .models import ImageCandidate, Topic, TranscriptSegment
+from .presets import AUDIOBOOK_PRESETS, apply_audiobook_preset
 from .slideshow import ImageCanvas, SlideshowController
 
 
@@ -201,6 +202,23 @@ class MainWindow(QMainWindow):
         self.form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.input_controls: list[QWidget] = []
+        preset_row = QWidget()
+        preset_layout = QHBoxLayout(preset_row)
+        preset_layout.setContentsMargins(0, 0, 0, 0)
+        self.audiobook_preset = QComboBox()
+        self.audiobook_preset.addItem("Choose audiobook preset", None)
+        for key, preset in AUDIOBOOK_PRESETS.items():
+            self.audiobook_preset.addItem(preset.name, key)
+            self.audiobook_preset.setItemData(self.audiobook_preset.count() - 1, preset.description,
+                                             Qt.ItemDataRole.ToolTipRole)
+        self.apply_preset_button = QPushButton("Apply")
+        self.apply_preset_button.setEnabled(False)
+        self.apply_preset_button.clicked.connect(self.apply_preset)
+        self.audiobook_preset.currentIndexChanged.connect(self._preset_selected)
+        preset_layout.addWidget(self.audiobook_preset, 1)
+        preset_layout.addWidget(self.apply_preset_button)
+        self.form.addRow("Audiobooks", preset_row)
+        self.input_controls.extend([self.audiobook_preset, self.apply_preset_button])
         self.audio_mode = QComboBox()
         for title, value in (("System audio · WASAPI loopback", "loopback"),
                              ("Microphone", "microphone"), ("Audio recording", "file")):
@@ -364,7 +382,7 @@ class MainWindow(QMainWindow):
         self.canvas.transition_seconds = self.settings.transition_seconds
         self.source_label.setVisible(self.attribution.isChecked() and not self._fullscreen)
 
-    def _read_settings(self) -> Settings:
+    def _read_settings(self, require_recording: bool = True) -> Settings:
         settings = deepcopy(self.settings)
         for name, value in {
             "audio_mode": self.audio_mode.currentData(),
@@ -379,9 +397,36 @@ class MainWindow(QMainWindow):
             "display_index": self.display.currentData() or 0,
         }.items():
             setattr(settings, name, value)
-        if settings.audio_mode == "file" and not Path(settings.audio_file).is_file():
+        if require_recording and settings.audio_mode == "file" and not Path(settings.audio_file).is_file():
             raise ValueError("Choose an existing audio recording first.")
         return settings.validate()
+
+    def _preset_selected(self, *args) -> None:
+        preset = AUDIOBOOK_PRESETS.get(self.audiobook_preset.currentData())
+        self.apply_preset_button.setEnabled(bool(preset) and not (self._monitoring or self._stopping))
+        self.audiobook_preset.setToolTip(preset.description if preset else "Choose a profile, then select Apply.")
+
+    def apply_preset(self) -> None:
+        if self._monitoring or self._stopping or self.audiobook_preset.currentData() is None:
+            return
+        try:
+            key = self.audiobook_preset.currentData()
+            self.settings = apply_audiobook_preset(self._read_settings(require_recording=False), key)
+            for control, value in ((self.interval, self.settings.slideshow_interval),
+                                   (self.sensitivity, self.settings.semantic_sensitivity),
+                                   (self.threshold, self.settings.relevance_threshold),
+                                   (self.semantic_interval, self.settings.semantic_interval),
+                                   (self.search_interval, self.settings.search_interval),
+                                   (self.chunk_interval, self.settings.chunk_seconds)):
+                with QSignalBlocker(control):
+                    control.setValue(value)
+            self.ranking.setCurrentIndex(self.ranking.findData(self.settings.ranking))
+            for provider, check in self.provider_boxes.items():
+                check.setChecked(provider in self.settings.providers)
+            self._apply_presentation()
+            self._device_status(f"{AUDIOBOOK_PRESETS[key].name} preset applied. Select Save settings to keep it.")
+        except Exception as exc:
+            self._error(f"Could not apply audiobook preset: {exc}")
 
     def _load_devices(self, *args) -> None:
         if self._monitoring or self._stopping:
@@ -491,6 +536,9 @@ class MainWindow(QMainWindow):
                 except RuntimeError:
                     pass
             self.pipeline = Pipeline(deepcopy(self.settings), callback)
+            self.current_topic = ""
+            self.topic_label.setText("Waiting for a topic")
+            self.slideshow.reset_playback()
             self._monitoring = True
             self._last_error = ""
             self._retrieval_message = "Images: waiting for spoken context."
@@ -521,6 +569,7 @@ class MainWindow(QMainWindow):
         self.clear_history_button.setEnabled(not active)
         for control in self.input_controls:
             control.setEnabled(not active)
+        self._preset_selected()
         if not active:
             is_file = self.audio_mode.currentData() == "file"
             self.audio_file.setEnabled(is_file)
@@ -555,6 +604,7 @@ class MainWindow(QMainWindow):
             topic: Topic = payload
             if topic.query != self.current_topic:
                 self.current_topic = topic.query
+                self.slideshow.set_topic(topic.query)
                 self.topic_label.setText(topic.query)
                 self.topic_history.insertItem(0, f"{topic.query}\n{topic.kind.replace('_', ' ').title()}")
                 self.topic_history.item(0).setToolTip(topic.context)
@@ -607,7 +657,10 @@ class MainWindow(QMainWindow):
     def _update_queue_label(self, count: int) -> None:
         prefix = "Paused · " if self.slideshow.paused else ""
         noun = "image" if count == 1 else "images"
-        self.queue_label.setText(f"{prefix}{count} {noun} ready")
+        if count == 0 and self.slideshow.replay_count >= 2:
+            self.queue_label.setText(f"{prefix}Cycling {self.slideshow.replay_count} current-topic images")
+        else:
+            self.queue_label.setText(f"{prefix}{count} {noun} ready")
         self._refresh_image_status()
 
     def _image_failed(self, message: str) -> None:
@@ -631,7 +684,8 @@ class MainWindow(QMainWindow):
             self._refresh_image_status()
             return
         if not displayed:
-            self.save_button.setEnabled(False)
+            self.slideshow.discard(candidate, self._displayed_candidate)
+            self.save_button.setEnabled(self._displayed_candidate is not None and self._displayed_candidate.path.is_file())
             return
         self._displayed_candidate = candidate
         self._image_error = ""

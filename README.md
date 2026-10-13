@@ -34,13 +34,25 @@ Microphone input is an alternative. To test a real recording or the included ori
 .\.venv\Scripts\python.exe -m semantic_image_stream --list-devices loopback
 ```
 
-Device indices can change after reconnecting devices. Use **↻** to refresh. Capture interruptions retry a limited number of times and surface failures in the status area. During silence or failed searches, the current image stays visible. When a topic's prefetched queue is exhausted, the current image is retained until a new topic/search yields more imagery.
+Device indices can change after reconnecting devices. Use **↻** to refresh. Capture interruptions retry a limited number of times and surface failures in the status area. Fresh approved images take priority. After the first batch, the slideshow cycles the current topic's approved images at your interval if at least two are available. A topic change clears the previous playlist and holds its last frame until new relevant images arrive. A single accepted image stays visible until there is another usable match.
 
 Start becomes available when audio-device discovery finishes. A missing saved input is shown explicitly; select an available input or refresh the list. Downloaded Whisper models load from the local cache first. The bottom status distinguishes receiving audio, loading recognition, and receiving audio without recognized speech. After installing an update, close the entire app and reopen it before starting monitoring.
 
 Images preview as soon as a validated result meets the relevance minimum, while remaining images load. The image-status line shows **Found / Loaded / Ready / Skipped** counts and explains rate limits, resolution rejection, insufficient relevance, pause, or display errors. Transcription can continue independently while an image source is unavailable. Topic changes recheck downloaded candidates against current context instead of discarding an entire batch.
 
 An image relevance-model failure appears in image status while speech monitoring continues; the selected ranking method and relevance minimum are preserved. CPU image ranking does not acquire the transcription GPU's lock.
+
+## Audiobook presets
+
+While monitoring is stopped, choose a profile in **Audiobooks** and click **Apply**. The profile changes pacing, topic persistence, source selection and metadata relevance settings; it preserves your selected audio input, speech model, language, cache and transition. Click **Save settings** to keep the profile for the next launch, then **Start monitoring**. You can adjust its values afterward.
+
+| Preset | Slide interval | Transcript context | Relevance minimum | Sources |
+| --- | --- | --- | --- | --- |
+| Fiction | 10 seconds | 90 seconds | 0.30 | Wikimedia Commons, Openverse |
+| History & Biography | 12 seconds | 120 seconds | 0.40 | Wikimedia Commons, Internet Archive |
+| Science & Technical | 10 seconds | 90 seconds | 0.35 | Wikimedia Commons, Openverse |
+
+These profiles use the local contextual analyzer and source-metadata ranking. Use History & Biography for historical nonfiction. Longer context keeps names and subjects available through explanatory narration. If an exact query returns no results, the app tries up to two shorter subjects or names derived from the same local context, using your selected providers and unchanged relevance minimum. The image status indicates when an alternative query is being used. Successful empty searches are cached so the same unsuccessful phrase is not repeatedly sent to the sources.
 
 ## Local relevance options
 

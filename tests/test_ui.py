@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog
 from semantic_image_stream.configuration import Settings
 from semantic_image_stream.desktop_ui import MainWindow, safe_source_url
 from semantic_image_stream.models import ImageCandidate, Topic, TranscriptSegment
+from semantic_image_stream.presets import AUDIOBOOK_PRESETS
 from semantic_image_stream.slideshow import ImageCanvas, SlideshowController
 from semantic_image_stream.audio_capture import AudioDevice
 import semantic_image_stream.desktop_ui as desktop_ui
@@ -109,7 +110,9 @@ def test_queue_history_and_topic_history_are_bounded(window, app, image_factory)
     assert window.image_history.count() == 60
     assert not window.slideshow.pending
     window.slideshow.set_queue(images, "topic")
-    assert len(window.slideshow.pending) == 30  # Only unseen members of this topic remain.
+    assert not window.slideshow.pending  # Repeated batches do not requeue previously shown images.
+    assert window.slideshow.replay_count == 60
+    assert len(window.slideshow._seen) == 60
     for index in range(50):
         window._handle_event(0, "topic", Topic(f"topic {index}", "context"))
     assert window.topic_history.count() == 30
@@ -495,3 +498,209 @@ def test_fullscreen_restores_hidden_attribution_and_maximized_state(window, app)
     assert window.source_label.isHidden()
     assert window.image_status_label.isHidden()
     assert window.header.isVisible() and window.transport.isVisible()
+
+
+def test_progressive_batches_merge_pending_and_prioritize_new_images(app, image_factory):
+    controller = SlideshowController()
+    first, second, third = image_factory(), image_factory("blue", "blue"), image_factory("green", "green")
+    controller.set_queue([first, second], "astronomy")
+    controller.set_queue([first, third], "astronomy")
+    assert list(controller.pending) == [second, third]
+    controller.advance(manual=True)
+    assert controller.current is second
+    controller.advance(manual=True)
+    assert controller.current is third
+    controller.advance(manual=True)
+    assert controller.current is first
+    controller.set_queue([first, second, third], "astronomy")
+    assert not controller.pending and controller.replay_count == 3
+    controller.timer.stop()
+
+
+def test_real_timer_cycles_past_batch_and_presentation_does_not_reset_cadence(window, image_factory):
+    first, second = image_factory(), image_factory("blue", "blue")
+    observed = []
+    window.slideshow.current_changed.connect(lambda image: observed.append(image))
+    window.interval.setValue(1)
+    window._handle_event(0, "topic", Topic("astronomy", "Stars and galaxies"))
+    window._handle_event(0, "images", [first, second])
+    QTest.qWait(350)
+    timer_id = window.slideshow.timer.timerId()
+    remaining = window.slideshow.timer.remainingTime()
+    window.transition.setCurrentIndex(window.transition.findData("dissolve"))
+    window.attribution.setChecked(False)
+    assert window.slideshow.timer.timerId() == timer_id
+    assert 0 < window.slideshow.timer.remainingTime() <= remaining
+    QTest.qWait(2950)
+    assert len(observed) >= 4
+    assert observed[:4] == [first, second, first, second]
+    assert all(left is not right for left, right in zip(observed, observed[1:]))
+    assert "Cycling 2 current-topic images" == window.queue_label.text()
+
+
+def test_new_subject_clears_playback_before_new_results_and_never_cycles_old_topic(window, image_factory):
+    first, second, third = image_factory(), image_factory("blue", "blue"), image_factory("green", "green")
+    window._handle_event(0, "topic", Topic("astronomy", "Stars"))
+    window._handle_event(0, "images", [first, second])
+    window._handle_event(0, "topic", Topic("botany", "Plants"))
+    assert window.slideshow.current is first
+    assert not window.slideshow.pending and window.slideshow.replay_count == 0
+    for _ in range(3):
+        window.slideshow.advance()
+    assert window.slideshow.current is first and len(window.slideshow.history) == 1
+    window._handle_event(0, "images", [third])
+    window.slideshow.advance()
+    assert window.slideshow.current is third
+    for _ in range(3):
+        window.slideshow.advance()
+    assert window.slideshow.current is third and len(window.slideshow.history) == 2
+
+
+def test_cycling_pause_manual_next_and_resume_use_real_timer(window, image_factory):
+    first, second = image_factory(), image_factory("blue", "blue")
+    window.interval.setValue(1)
+    window._handle_event(0, "images", [first, second])
+    window.next_image()
+    assert not window.slideshow.pending
+    window.toggle_pause()
+    QTest.qWait(1150)
+    assert window.slideshow.current is second and len(window.slideshow.history) == 2
+    window.next_image()
+    assert window.slideshow.current is first and window.slideshow.paused
+    assert not window.slideshow.timer.isActive()
+    window.toggle_pause()
+    QTest.qWait(1150)
+    assert window.slideshow.current is second and len(window.slideshow.history) == 4
+
+
+def test_deleted_replay_files_are_skipped_and_single_image_does_not_repeat(app, image_factory):
+    controller = SlideshowController()
+    first, second = image_factory(), image_factory("blue", "blue")
+    controller.set_queue([first, second], "astronomy")
+    controller.advance(manual=True)
+    first.path.unlink()
+    for _ in range(4):
+        controller.advance(manual=True)
+    assert controller.current is second
+    assert len(controller.history) == 2 and controller.replay_count == 1
+    controller.timer.stop()
+
+
+def test_new_session_discards_old_topic_playback(window, image_factory, monkeypatch):
+    from semantic_image_stream import engine
+
+    class IdlePipeline:
+        def __init__(self, settings, callback):
+            self.settings, self.callback = settings, callback
+
+        def start(self):
+            pass
+
+        def stop(self):
+            self.callback("stopped", None)
+
+    monkeypatch.setattr(engine, "Pipeline", IdlePipeline)
+    first, second = image_factory(), image_factory("blue", "blue")
+    window._handle_event(0, "topic", Topic("old book", "Prior recording"))
+    window._handle_event(0, "images", [first, second])
+    window.start_monitoring()
+    assert window.current_topic == "" and window.topic_label.text() == "Waiting for a topic"
+    assert not window.slideshow.pending and window.slideshow.replay_count == 0
+    window.slideshow.advance()
+    assert window.slideshow.current is first
+
+
+def test_audiobook_preset_requires_apply_and_preserves_unsaved_input_choices(window, tmp_path):
+    window.config_path = tmp_path / "listener.toml"
+    initial_interval = window.interval.value()
+    window.model.setCurrentText("turbo")
+    window.audio_mode.setCurrentIndex(window.audio_mode.findData("microphone"))
+    window.audio_device.addItem("Chosen input", 77)
+    window.audio_device.setCurrentIndex(window.audio_device.findData(77))
+    window.whisper_device.setCurrentIndex(window.whisper_device.findData("cpu"))
+    window.transition.setCurrentIndex(window.transition.findData("zoom"))
+    window.chunk_interval.setValue(8)
+    window.settings.language = "en"
+    cache_dir = window.settings.cache_dir
+    window.audiobook_preset.setCurrentIndex(window.audiobook_preset.findData("history"))
+    assert window.apply_preset_button.isEnabled()
+    assert window.interval.value() == initial_interval
+    assert not window.config_path.exists()
+    QTest.mouseClick(window.apply_preset_button, Qt.MouseButton.LeftButton)
+    chosen = window._read_settings()
+    assert chosen.audio_mode == "microphone" and chosen.audio_device == 77
+    assert chosen.whisper_model == "turbo" and chosen.whisper_device == "cpu"
+    assert chosen.language == "en" and chosen.cache_dir == cache_dir
+    assert chosen.transition == "zoom" and chosen.chunk_seconds == 8
+    assert chosen.slideshow_interval == AUDIOBOOK_PRESETS["history"].slideshow_interval
+    assert chosen.transcript_window_seconds == 120 and chosen.prefetch_count == 8
+    assert chosen.providers == ["wikimedia", "archive"] and chosen.ranking == "metadata"
+    assert not window.config_path.exists()
+    window.save_settings()
+    saved = Settings.load(window.config_path)
+    assert saved.transcript_window_seconds == 120 and saved.audio_device == 77
+    assert saved.whisper_model == "turbo" and saved.providers == ["wikimedia", "archive"]
+
+
+def test_audiobook_preset_disabled_during_monitoring_and_stopping(window):
+    assert window.audiobook_preset.currentData() is None
+    assert not window.apply_preset_button.isEnabled()
+    window.audiobook_preset.setCurrentIndex(window.audiobook_preset.findData("fiction"))
+    original = window.interval.value()
+    for monitoring, stopping in ((True, False), (False, True)):
+        window._monitoring, window._stopping = monitoring, stopping
+        window._update_controls()
+        assert not window.audiobook_preset.isEnabled() and not window.apply_preset_button.isEnabled()
+        window.apply_preset()
+        assert window.interval.value() == original
+    window._monitoring = window._stopping = False
+    window._update_controls()
+    assert window.audiobook_preset.isEnabled() and window.apply_preset_button.isEnabled()
+
+
+def test_audiobook_preset_can_be_chosen_before_a_recording(window):
+    window.audio_mode.setCurrentIndex(window.audio_mode.findData("file"))
+    window.audiobook_preset.setCurrentIndex(window.audiobook_preset.findData("science"))
+    window.apply_preset()
+    assert window.settings.audio_mode == "file" and window.settings.audio_file == ""
+    assert window.settings.transcript_window_seconds == 90
+    assert "preset applied" in window.status_label.text()
+
+
+def test_decode_failed_image_is_not_replayed_and_preserves_displayed_frame(window, image_factory, tmp_path):
+    first, second = image_factory(), image_factory("blue", "blue")
+    bad_path = tmp_path / "unreadable.jpg"
+    bad_path.write_bytes(b"Not a decodable image")
+    bad = ImageCandidate("https://example.com/bad.jpg", "https://example.com/source", "bad", "wikimedia",
+                         local_path=str(bad_path))
+    recorded = []
+
+    class RecordingPipeline:
+        def record_displayed(self, image):
+            recorded.append(image)
+
+        def stop(self):
+            pass
+
+    window.pipeline = RecordingPipeline()
+    window._handle_event(0, "images", [first, bad, second])
+    pixmap_key = window.canvas.current_pixmap.cacheKey()
+    window.next_image()
+    assert window.slideshow.current is first
+    assert window._displayed_candidate is first
+    assert window.canvas.current_pixmap.cacheKey() == pixmap_key
+    assert window.save_button.isEnabled()
+    assert "Could not display image" in window.image_status_label.text()
+    assert bad not in window.slideshow.history and bad not in window.slideshow.pending
+    assert recorded == [first]
+    window._handle_event(0, "status", "Ready: 3 relevant images")
+    assert "Could not display image" in window.image_status_label.text()
+    window.next_image()
+    assert window.slideshow.current is second and window.slideshow.replay_count == 2
+    for _ in range(4):
+        window.next_image()
+    assert recorded == [first, second, first, second, first, second]
+    assert list(window.slideshow.history) == recorded
+    assert window.image_history.count() == len(recorded)
+    assert bad not in window.slideshow._playlist.values()
+    assert "Could not display image" not in window.image_status_label.text()

@@ -68,6 +68,18 @@ Fullscreen now hides all controls/status panels and removes layout margins and m
 
 The complete updated local suite passed 157 tests, and lint passed.
 
+## Audiobook pacing and presets
+
+A reported five-second slideshow stalled with working narration, zero ready images and a zero-result query. Playback previously consumed each accepted batch once and then waited for a new topic. The controller now merges progressive batches and rotates a bounded current-topic approved playlist after fresh images run out. New subjects clear older pending/replay images; a lone accepted image stays visible. Decode-failed files are discarded from replay and displayed history. Unchanged interval values no longer restart the timer during presentation edits.
+
+Fiction, History & Biography and Science & Technical profiles are selectable through an explicit Apply action. They retain the listener's audio/model/language/storage choices while tuning context, semantic/search/presentation clocks, sources and metadata thresholds. Tests cover applying a profile to unsaved controls, saving/reloading it, and the pipeline receiving the selected values.
+
+Narration analysis now excludes contraction fragments and preserves compound/name/acronym subjects through explanatory passages. Empty searches try at most two shorter locally derived subjects with the same provider selection and relevance threshold. Offline integration checks verify fallback ranking at 0.50, topic changes rejecting obsolete fallback matches, bounded query attempts, successful empty-query caching and provider failures not being cached as empty success.
+
+An actual Qt fullscreen playback check used two previously retrieved genuine astronomical source images ranked locally above 0.50. With a five-second interval, four consecutive displays occurred at 0.032, 5.047, 10.063 and 15.094 seconds: gaps of 5.015, 5.016 and 5.031 seconds, including playback after the original queue was consumed. The canvas filled the virtual display. This check used no live microphone or provider calls and is not a genre accuracy benchmark or a physical-monitor check.
+
+All 198 local regression tests and lint passed. An earlier complete run had one timeout in an unchanged image-validation test; that isolated check and the subsequent complete run passed without altering its deadline or validation logic.
+
 ## Next milestones
 
 1. Benchmark real recordings and noisy live speech; add multilingual semantic analyzers and better relationship/negation handling.

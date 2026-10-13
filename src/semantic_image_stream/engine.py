@@ -13,7 +13,7 @@ import time
 from .cache import Cache
 from .image_ranking import build_ranker, is_duplicate
 from .models import ImageCandidate
-from .semantic_analysis import TopicGate, build_analyzer, sanitize_query
+from .semantic_analysis import TopicGate, build_analyzer, fallback_queries, sanitize_query
 
 log = logging.getLogger(__name__)
 GPU_LOCK = threading.Lock()
@@ -244,20 +244,39 @@ class Pipeline:
                 generation, topic = self.topic_queue.get_nowait()
             self._last_search = time.monotonic()
             query = sanitize_query(topic.query)
-            key = json.dumps([query.casefold(), self.settings.providers, self.settings.results_per_provider])
-            candidates = cache.get_query(key)
-            if candidates is None:
-                self.emit("status", "Retrieving existing images from selected sources…")
-                results = await asyncio.gather(*(p.search(query, self.settings.results_per_provider) for p in providers),
-                                               return_exceptions=True)
-                candidates = []
-                for provider, result in zip(providers, results):
-                    if isinstance(result, Exception):
-                        self.emit("status", f"{provider.name} unavailable ({type(result).__name__}); trying other sources.")
-                    else:
-                        candidates.extend(result)
+            candidates = await self._query_candidates(query, providers, cache)
+            fallback_topic, fallback_query = None, None
+            tried = {query.casefold()}
+            remaining = 2
+            while not candidates and remaining and not self.stop_event.is_set():
+                # Narration can produce an over-specific or mistranscribed
+                # primary query. Try only two shorter subjects from CURRENT
+                # speech, and stop as soon as a selected source has results.
+                basis = self._latest_topic or topic
+                alternatives = [sanitize_query(q) for q in fallback_queries(basis)]
+                alternatives = [q for q in alternatives if q and q.casefold() not in tried]
+                if not alternatives:
+                    break
+                shorter = alternatives[0]
+                tried.add(shorter.casefold())
+                remaining -= 1
+                self.emit("retrieval", {"phase": "searching", "found": 0, "downloaded": 0,
+                                        "rejected": 0, "accepted": 0,
+                                        "threshold": self.settings.relevance_threshold,
+                                        "best_score": None, "failures": {},
+                                        "message": "No matches yet; trying a shorter query from the current spoken context."})
+                candidates = await self._query_candidates(shorter, providers, cache)
                 if candidates:
-                    cache.put_query(key, candidates)
+                    fallback_topic, fallback_query = basis, shorter
+
+            def ranking_topic():
+                current = self._latest_topic or topic
+                # Retain full context, concepts and kind, but score matches to
+                # the shorter subject that actually found them. Once speech
+                # changes, obsolete fallback wording must not bless old images.
+                effective = replace(current, query=fallback_query) if current is fallback_topic else current
+                return current, effective
+
             by_url = {}
             for candidate in candidates:
                 by_url.setdefault(candidate.image_url, candidate)
@@ -266,7 +285,7 @@ class Pipeline:
             # images; retain other candidates for actual multimodal ranking.
             if ranker.name == "metadata":
                 try:
-                    preferred = ranker.rank(self._latest_topic or topic, unique, [])
+                    preferred = ranker.rank(ranking_topic()[1], unique, [])
                 except Exception as exc:
                     self._report_ranking_failure(ranker, exc, len(unique), 0)
                     await self._wait_for_search_retry(generation, topic)
@@ -298,6 +317,8 @@ class Pipeline:
                                "Speech monitoring continues.")
                 else:
                     message = f"Checking images · {downloaded} downloaded from {len(unique)} results"
+                if (self._latest_topic or topic) is fallback_topic:
+                    message += " · using a shorter query from the current spoken context"
                 self.emit("retrieval", {"phase": phase, "found": len(unique), "downloaded": downloaded,
                                         "rejected": sum(failures.values()), "accepted": accepted,
                                         "threshold": self.settings.relevance_threshold,
@@ -345,7 +366,7 @@ class Pipeline:
                     # re-evaluate it against the CURRENT context before display.
                     # Repeat if context changes while a local model is ranking.
                     while True:
-                        current = self._latest_topic or topic
+                        basis, current = ranking_topic()
                         if ranker.name == "clip" and getattr(ranker, "model", None) is None:
                             report("loading", len(published), best_score)
                         try:
@@ -354,7 +375,7 @@ class Pipeline:
                             ranking_failed = True
                             self._report_ranking_failure(ranker, exc, len(unique), downloaded, len(published))
                             break
-                        if current is (self._latest_topic or topic):
+                        if basis is (self._latest_topic or topic):
                             break
                     if ranking_failed:
                         break
@@ -396,6 +417,29 @@ class Pipeline:
                 # behind the old topic's fixed thirty-second failure delay.
                 await self._wait_for_search_retry(generation, topic)
             cache.prune(set(self._protected_paths))
+
+    async def _query_candidates(self, query, providers, cache):
+        key = json.dumps([query.casefold(), self.settings.providers, self.settings.results_per_provider])
+        cached = cache.get_query(key)
+        if cached is not None:
+            return cached
+        self.emit("status", "Retrieving existing images from selected sources…")
+        results = await asyncio.gather(*(p.search(query, self.settings.results_per_provider) for p in providers),
+                                       return_exceptions=True)
+        candidates = []
+        succeeded = True
+        for provider, result in zip(providers, results):
+            if isinstance(result, Exception):
+                succeeded = False
+                self.emit("status", f"{provider.name} unavailable ({type(result).__name__}); trying other sources.")
+            else:
+                candidates.extend(result)
+        # A genuine zero-result query is cached too, preventing unchanged
+        # narration from repeatedly hitting the same sources. Availability
+        # errors are never treated as evidence that a subject has no images.
+        if candidates or succeeded:
+            cache.put_query(key, candidates)
+        return candidates
 
     def _report_ranking_failure(self, ranker, error, found, downloaded, accepted=0):
         # Exception text can include file paths, URLs or private model inputs.
