@@ -26,7 +26,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-search = ["ddgs>=9.16,<10"]
+search = ["ddgs>=9.16,<9.17"]
 semantic = ["spacy>=3.8,<4"]
 clip = ["torch>=2.4,<3", "transformers>=4.46,<5"]
 dev = ["pytest>=8.3,<10", "pytest-asyncio>=0.24,<2", "ruff>=0.9,<1", "build>=1.2,<2"]

@@ -3,8 +3,10 @@ import asyncio
 from datetime import datetime, timezone
 from email.utils import format_datetime
 import io
+import json
 from pathlib import Path
 import threading
+from types import SimpleNamespace
 
 import httpx
 from PIL import Image, PngImagePlugin
@@ -15,7 +17,7 @@ from semantic_image_stream.image_download import DownloadError, ImageDownloader,
 from semantic_image_stream.models import ImageCandidate
 from semantic_image_stream.search_providers import (
     DuckDuckGoProvider, InternetArchiveProvider, OpenverseProvider, ProviderError,
-    WikimediaProvider, build_providers, plain_text, sanitize_query,
+    WikimediaProvider, _duckduckgo_client_factory, build_providers, plain_text, sanitize_query,
 )
 
 
@@ -211,6 +213,94 @@ async def test_ddgs_uses_only_explicit_duckduckgo_backend(settings):
     assert seen[0][1]["backend"] == "duckduckgo"
     assert results[0].license.startswith("Unknown")
     assert results[0].creator == "Unknown"
+
+
+@pytest.mark.asyncio
+async def test_installed_ddgs_cleans_only_owned_image_request_headers(settings, monkeypatch):
+    ddgs_module = pytest.importorskip("ddgs.ddgs")
+    http_module = pytest.importorskip("ddgs.http_client")
+    images_module = pytest.importorskip("ddgs.engines.duckduckgo_images")
+    primp = pytest.importorskip("primp")
+    native_class = primp.Client
+    monkeypatch.delenv("DDGS_PROXY", raising=False)
+    clients, requests = [], []
+
+    class NativeBoundary:
+        """Real native header handling; replace only the outbound HTTP boundary."""
+        def __init__(self, **kwargs):
+            self.options = kwargs
+            self.native = native_class(**kwargs)
+            self.identity = (self.native.impersonate, self.native.impersonate_os)
+            clients.append(self)
+
+        @property
+        def headers(self):
+            return self.native.headers
+
+        @headers.setter
+        def headers(self, value):
+            self.native.headers = value
+
+        def headers_update(self, value):
+            self.native.headers_update(value)
+            self.original_headers = self.native.headers
+
+        def request(self, method, url, **kwargs):
+            headers = self.native.headers
+            assert not any(name.casefold() == "connection" for name in headers)
+            assert headers == {name: value for name, value in self.original_headers.items()
+                               if name.casefold() != "connection"}
+            assert (self.native.impersonate, self.native.impersonate_os) == self.identity
+            requests.append((self, method, url, kwargs))
+            if url == "https://duckduckgo.com":
+                content = b'<script>vqd="offline-test-token";</script>'
+            elif url == "https://duckduckgo.com/i.js":
+                content = json.dumps({"results": [{
+                    "title": "Geologists investigate anomalies",
+                    "image": "https://photos.example.org/field.jpg",
+                    "url": "https://museum.example.org/field",
+                    "width": 800, "height": 600, "source": "Example",
+                }]}).encode()
+            else:
+                pytest.fail(f"Unexpected search backend: {url}")
+            return SimpleNamespace(status_code=200, content=content, text=content.decode())
+
+    monkeypatch.setattr(http_module.primp, "Client", NativeBoundary)
+    default_headers = dict(images_module.DuckduckgoImages.headers_update)
+    ordinary = ddgs_module.DDGS(timeout=settings.download_timeout)
+    ordinary_client = ordinary._get_engines("images", "duckduckgo")[0].http_client.client
+    ordinary_headers = ordinary_client.headers
+    assert any(name.casefold() == "connection" for name in ordinary_headers)
+
+    results = await DuckDuckGoProvider(settings).search("geologists anomalies", 1)
+
+    assert len(results) == 1
+    assert results[0].title == "Geologists investigate anomalies"
+    assert results[0].image_url == "https://photos.example.org/field.jpg"
+    assert results[0].source_url == "https://museum.example.org/field"
+    assert results[0].provider == "duckduckgo"
+    assert len(clients) == 2  # One untouched ordinary client, one owned adapter client.
+    adapted = clients[1]
+    assert adapted.options == {"proxy": None, "timeout": settings.download_timeout,
+                               "impersonate": "random", "impersonate_os": "random",
+                               "verify": True, "ca_cert_file": None}
+    assert [(method, url) for _, method, url, _ in requests] == [
+        ("GET", "https://duckduckgo.com"), ("GET", "https://duckduckgo.com/i.js"),
+    ]
+    assert all(owner is adapted for owner, *_ in requests)
+    assert requests[0][3]["params"] == {"q": "geologists anomalies"}
+    assert requests[1][3]["params"]["vqd"] == "offline-test-token"
+    assert requests[1][3]["params"]["p"] == "1"
+    assert ordinary_client.headers == ordinary_headers
+    assert images_module.DuckduckgoImages.headers_update == default_headers
+
+
+def test_ddgs_adapter_refuses_unrequested_backend(monkeypatch):
+    ddgs_module = pytest.importorskip("ddgs.ddgs")
+    monkeypatch.setattr(ddgs_module.DDGS, "_get_engines",
+                        lambda *args: [SimpleNamespace(name="another-provider")])
+    with pytest.raises(ProviderError, match="requested DuckDuckGo image backend"):
+        _duckduckgo_client_factory()()._get_engines("images", "duckduckgo")
 
 
 @pytest.mark.asyncio

@@ -324,6 +324,32 @@ class InternetArchiveProvider(_HTTPProvider):
         return candidates
 
 
+def _duckduckgo_client_factory():
+    # Import the real implementation lazily: DDGS's top-level lazy proxy
+    # returns the base class when subclassed, bypassing this override.
+    from ddgs.ddgs import DDGS
+
+    class DuckDuckGoClient(DDGS):
+        def _get_engines(self, category, backend):
+            # This engine hook is internal to DDGS 9.16; the search extra pins
+            # that minor release. Native headers use primp's public setter.
+            engines = super()._get_engines(category, backend)
+            if category == "images" and backend == "duckduckgo":
+                for engine in engines:
+                    if engine.name != "duckduckgo":
+                        raise ProviderError("The requested DuckDuckGo image backend is unavailable")
+                    native = engine.http_client.client
+                    headers = native.headers
+                    cleaned = {name: value for name, value in headers.items() if name.casefold() != "connection"}
+                    if len(cleaned) != len(headers):
+                        # Connection: keep-alive is legal HTTP/1.1, but causes
+                        # native HTTP/2 clients to reject these image requests.
+                        native.headers = cleaned
+            return engines
+
+    return DuckDuckGoClient
+
+
 class DuckDuckGoProvider:
     """Optional DDGS adapter, pinned to the requested DuckDuckGo backend."""
     name = "duckduckgo"
@@ -341,10 +367,9 @@ class DuckDuckGoProvider:
             raise ProviderError("duckduckgo previous request is still finishing")
         if self._factory is None:
             try:
-                from ddgs import DDGS
+                self._factory = _duckduckgo_client_factory()
             except ImportError as error:
                 raise ProviderError("duckduckgo needs the optional 'search' dependency") from error
-            self._factory = DDGS
         # A synchronous library cannot be forcibly cancelled. Prevent repeated
         # timeout searches from accumulating workers; library timeout also bounds I/O.
         self._inflight = True

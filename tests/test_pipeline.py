@@ -4,6 +4,7 @@ Only inference and external network boundaries are substituted here. Live
 recording/model/provider validation is a separate opt-in script.
 """
 import asyncio
+import json
 import queue
 import threading
 import time
@@ -13,9 +14,53 @@ import numpy as np
 import pytest
 
 from semantic_image_stream.audio_capture import FileCapture
+from semantic_image_stream.cache import Cache
 from semantic_image_stream.configuration import Settings
 from semantic_image_stream.engine import Pipeline, SessionState
 from semantic_image_stream.models import AudioChunk, ImageCandidate, Topic, TranscriptSegment
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selected", [["wikimedia", "duckduckgo"], ["wikimedia"]])
+async def test_duckduckgo_header_fix_refreshes_old_partial_searches_once_without_clearing_history(tmp_path, selected):
+    settings = Settings(cache_dir=str(tmp_path), providers=selected)
+    pipeline = Pipeline(settings, lambda *args: None)
+    cache = Cache(settings)
+    old = ImageCandidate(image_url="https://photos.example.org/old.jpg", source_url="https://museum.example.org/old",
+                         title="Previous partial result", provider="wikimedia")
+    legacy_key = json.dumps(["earth orbit", selected, settings.results_per_provider])
+    cache.put_query(legacy_key, [old])
+    cache.record(old)
+    calls = []
+
+    class Provider:
+        def __init__(self, name):
+            self.name = name
+
+        async def search(self, query, limit):
+            calls.append(self.name)
+            return [ImageCandidate(image_url=f"https://photos.example.org/{self.name}.jpg",
+                                   source_url=f"https://museum.example.org/{self.name}",
+                                   title="Current result", provider=self.name)]
+
+    providers = [Provider(name) for name in selected]
+    try:
+        result = await pipeline._query_candidates("Earth orbit", providers, cache)
+        if "duckduckgo" in selected:
+            assert calls == selected
+            assert {candidate.provider for candidate in result} == set(selected)
+            assert old.image_url not in {candidate.image_url for candidate in result}
+        else:
+            assert not calls
+            assert [candidate.image_url for candidate in result] == [old.image_url]
+        before = list(calls)
+        repeated = await pipeline._query_candidates("Earth orbit", providers, cache)
+        assert calls == before
+        assert repeated == result
+        assert cache.get_query(legacy_key) == [old]
+        assert cache.history() == [old]
+    finally:
+        cache.close()
 
 
 def test_pipeline_file_to_ranked_images_with_provider_failure(tmp_path, monkeypatch):

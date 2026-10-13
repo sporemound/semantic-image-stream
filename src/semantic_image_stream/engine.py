@@ -679,7 +679,13 @@ class Pipeline:
         return bool(published), ranking_failed
 
     async def _query_candidates(self, query, providers, cache):
-        key = json.dumps([query.casefold(), self.settings.providers, self.settings.results_per_provider])
+        identity = [query.casefold(), self.settings.providers, self.settings.results_per_provider]
+        if "duckduckgo" in self.settings.providers:
+            # Older combined cache entries can contain only the other sources'
+            # partial results after DDGS's malformed HTTP/2 header failed.
+            # Refresh those queries once while retaining image/history caches.
+            identity.append("duckduckgo-http2-v1")
+        key = json.dumps(identity)
         cached = cache.get_query(key)
         if cached is not None:
             return cached
