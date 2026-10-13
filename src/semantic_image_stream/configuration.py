@@ -30,6 +30,13 @@ class Settings:
     slideshow_interval: float = 9.0
     semantic_sensitivity: float = 0.45
     relevance_threshold: float = 0.30
+    time_filter_enabled: bool = False
+    time_filter_target: str = "depicted"
+    time_filter_start: float = 1000.0
+    time_filter_end: float = 2026.0
+    time_filter_scale: str = "calendar"
+    time_filter_include_undated: bool = False
+    exclude_ai_generated: bool = True
     semantic_provider: str = "contextual"
     context_model: str = "qwen2.5:7b"
     book_context: str = ""
@@ -72,6 +79,7 @@ class Settings:
                  "semantic_provider": {"contextual", "spacy", "ollama"},
                  "transition": {"crossfade", "dissolve", "zoom", "cut"},
                  "clip_device": {"cpu", "cuda"}}
+        enums.update(time_filter_target={"depicted", "created"}, time_filter_scale={"calendar", "geological"})
         for key, choices in enums.items():
             if getattr(self, key) not in choices:
                 raise ValueError(f"{key} must be one of {sorted(choices)}")
@@ -120,6 +128,16 @@ class Settings:
             raise ValueError("training_dir must name a local folder")
         if not isinstance(self.use_story_examples, bool):
             raise ValueError("use_story_examples must be true or false")
+        for key in ("time_filter_enabled", "time_filter_include_undated", "exclude_ai_generated"):
+            if not isinstance(getattr(self, key), bool):
+                raise ValueError(f"{key} must be true or false")
+        for key in ("time_filter_start", "time_filter_end"):
+            value = getattr(self, key)
+            if (not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value)
+                    or not 1950 - 14_000_000_000 <= value <= 100_000):
+                raise ValueError(f"{key} must be a finite supported calendar or geological year")
+        if self.time_filter_start > self.time_filter_end:
+            raise ValueError("The time filter's start must be older than or equal to its end")
         if self.context_cpu_threads > 32:
             raise ValueError("context_cpu_threads must be at most 32")
         return self

@@ -1,5 +1,6 @@
-# Audio remains local. Only a sanitized query of up to 8 words is sent to
-# selected providers. Whisper/CLIP weights download once on first use.
+# Audio remains local. Only a sanitized query of up to 8 story words, with
+# an optional geological period hint, is sent to selected providers.
+# Whisper/CLIP weights download once on first use.
 # Install Ollama and manually cache qwen2.5:7b before using full-session mode.
 # The app never downloads an absent narrative model; see README setup.
 audio_mode = "loopback" # loopback, microphone, file
@@ -19,6 +20,15 @@ search_interval = 12.0
 slideshow_interval = 9.0
 semantic_sensitivity = 0.45
 relevance_threshold = 0.30
+time_filter_enabled = false
+time_filter_target = "depicted" # depicted subject/event, or created/published
+time_filter_scale = "calendar" # calendar or geological; display only
+# Stored as calendar years: 1 BCE = 0; geological age = 1950 - age in years.
+# The UI accepts CE/BCE, BP, ka, Ma and Ga in the editable year fields.
+time_filter_start = 1000.0
+time_filter_end = 2026.0
+time_filter_include_undated = false # when enabled, strict source date evidence by default
+exclude_ai_generated = true # source labels and embedded metadata, not pixel detection
 semantic_provider = "ollama" # full session; contextual/spacy are basic alternatives
 context_model = "qwen2.5:7b" # complete cached local GGUF model; no cloud models
 book_context = "" # optional title/setting/background; edits re-read retained text

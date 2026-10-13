@@ -1,4 +1,4 @@
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -49,13 +49,22 @@ class ImageCandidate:
     phash: str = ""
     score: float = 0.0
     authenticity: str = "Unverified source imagery"
+    ai_generated: bool | None = None
+    temporal_evidence: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> "ImageCandidate":
-        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+        from .temporal_filter import validated_evidence
+
+        fields = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        if "temporal_evidence" in fields:
+            fields["temporal_evidence"] = validated_evidence(fields["temporal_evidence"])
+        if "ai_generated" in fields and type(fields["ai_generated"]) is not bool:
+            fields["ai_generated"] = None
+        return cls(**fields)
 
     @property
     def path(self) -> Path:

@@ -28,7 +28,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .configuration import Settings
 from .models import ImageCandidate
-from .search_providers import USER_AGENT, is_known_generated
+from .search_providers import USER_AGENT, is_known_generated, is_known_generation_software
 
 ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp", "image/gif", "image/bmp", "image/tiff"}
 ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP", "GIF", "BMP", "TIFF"}
@@ -133,13 +133,17 @@ class ImageDownloader:
         )
 
     async def download(self, candidate: ImageCandidate) -> ImageCandidate:
-        if is_known_generated(candidate.title, candidate.description, candidate.creator, candidate.authenticity):
+        generated = candidate.ai_generated is True or is_known_generated(
+            candidate.title, candidate.description, candidate.creator, candidate.authenticity)
+        if generated:
+            candidate.ai_generated = True
+        if generated and getattr(self.settings, "exclude_ai_generated", True):
             raise DownloadError("Source metadata identifies a generated image", reason="Generated image excluded")
         try:
             # Entire deadline includes DNS, all redirects and stream reads.
             async with asyncio.timeout(self.settings.download_timeout):
                 data = await self._read(candidate.image_url)
-                encoded, extension, width, height, phash = await asyncio.to_thread(self._decode, data)
+                encoded, extension, width, height, phash, embedded_generated = await asyncio.to_thread(self._decode, data)
             # Only verified, re-encoded bytes are persisted. Temp paths are
             # unique, basename is content-derived, and replace is atomic.
             digest = hashlib.sha256(encoded).hexdigest()
@@ -157,6 +161,8 @@ class ImageDownloader:
                     Path(temporary).unlink(missing_ok=True)
             candidate.local_path = str(destination)
             candidate.width, candidate.height, candidate.phash = width, height, phash
+            if embedded_generated:
+                candidate.ai_generated = True
             return candidate
         except DownloadError:
             raise
@@ -240,7 +246,7 @@ class ImageDownloader:
                 return bytes(data)
         raise DownloadError("Image redirect limit exceeded")
 
-    def _decode(self, data: bytes) -> tuple[bytes, str, int, int, str]:
+    def _decode(self, data: bytes) -> tuple[bytes, str, int, int, str, bool]:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("error", Image.DecompressionBombWarning)
@@ -266,7 +272,14 @@ class ImageDownloader:
                     # Read generated-image indicators from standard textual
                     # metadata too, but do not claim absence proves authenticity.
                     text_metadata = [v for v in original.info.values() if isinstance(v, str)]
-                    if is_known_generated(*text_metadata):
+                    software = [value for key, value in original.info.items()
+                                if str(key).casefold() in {"software", "parameters", "workflow", "generation_parameters"}]
+                    exif = original.getexif()
+                    if isinstance(exif.get(305), str):
+                        software.append(exif[305])  # Standard EXIF Software field.
+                    generated = (is_known_generated(*text_metadata)
+                                 or any(is_known_generation_software(value) for value in software))
+                    if generated and getattr(self.settings, "exclude_ai_generated", True):
                         raise DownloadError("Embedded metadata identifies a generated image", reason="Generated image excluded")
                     phash = str(imagehash.phash(image))
                     output = io.BytesIO()
@@ -288,7 +301,7 @@ class ImageDownloader:
                     encoded = output.getvalue()
                     if len(encoded) > self.settings.max_download_bytes:
                         raise DownloadError("Validated image exceeds the cache file size limit", reason="Image exceeds safety limits")
-                    return encoded, extension, width, height, phash
+                    return encoded, extension, width, height, phash, generated
         except DownloadError:
             raise
         except (UnidentifiedImageError, OSError, ValueError, SyntaxError,

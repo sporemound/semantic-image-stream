@@ -9,7 +9,7 @@ import threading
 import weakref
 from urllib.parse import urlsplit
 
-from PySide6.QtCore import QObject, QSignalBlocker, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, QSignalBlocker, Qt, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
@@ -21,9 +21,11 @@ from PySide6.QtWidgets import (
 from .configuration import Settings
 from .models import ImageCandidate, Topic, TranscriptSegment
 from .presets import AUDIOBOOK_PRESETS, apply_audiobook_preset
+from .range_slider import RangeSlider
 from .session_store import SessionStore, SessionStoreError
 from .slideshow import ImageCanvas, SlideshowController
 from .training_paths import training_file
+from .temporal_filter import format_year, parse_year
 
 
 STYLE = """
@@ -114,6 +116,7 @@ class MainWindow(QMainWindow):
         self._feedback_topic: Topic | None = None
         self._feedback_frame_token = 0
         self._feedback_pending: dict = {}
+        self._filter_last_valid_range = (settings.time_filter_start, settings.time_filter_end)
         self.current_topic = ""
         self.setWindowTitle("Semantic Image Stream")
         self.resize(1360, 900)
@@ -124,6 +127,10 @@ class MainWindow(QMainWindow):
         self.relay.devices.connect(self._devices_ready)
         self.relay.session_status.connect(self._show_session_status)
         self.slideshow = SlideshowController(settings.slideshow_interval, self)
+        self._filter_debounce = QTimer(self)
+        self._filter_debounce.setSingleShot(True)
+        self._filter_debounce.setInterval(300)
+        self._filter_debounce.timeout.connect(self._apply_image_filters_live)
         self._build_ui()
         self.slideshow.current_changed.connect(self._show_image)
         self.slideshow.history_changed.connect(self._show_history)
@@ -323,6 +330,76 @@ class MainWindow(QMainWindow):
             provider_layout.addWidget(check)
             self.input_controls.append(check)
         self.form.addRow("Image sources", providers)
+        self.time_filter_enabled = QCheckBox("Filter by time period")
+        self.time_filter_enabled.setChecked(self.settings.time_filter_enabled)
+        self.form.addRow(self.time_filter_enabled)
+        self.time_filter_panel = QWidget()
+        time_form = QFormLayout(self.time_filter_panel)
+        time_form.setContentsMargins(0, 0, 0, 0)
+        time_form.setSpacing(4)
+        time_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.time_filter_target = QComboBox()
+        self.time_filter_target.addItem("Depicted subject or event", "depicted")
+        self.time_filter_target.addItem("Created or published", "created")
+        self.time_filter_target.setCurrentIndex(self.time_filter_target.findData(self.settings.time_filter_target))
+        self.time_filter_target.setToolTip("A fossil's age describes its subject. A photograph's creation date describes when the image was made.")
+        time_form.addRow("Date refers to", self.time_filter_target)
+        self.time_filter_scale = QComboBox()
+        self.time_filter_scale.addItem("Calendar years", "calendar")
+        self.time_filter_scale.addItem("Geological time", "geological")
+        self.time_filter_scale.setCurrentIndex(self.time_filter_scale.findData(self.settings.time_filter_scale))
+        time_form.addRow("Slider scale", self.time_filter_scale)
+        self.time_range = RangeSlider()
+        self.time_range.set_scale(self.settings.time_filter_scale)
+        self.time_range.set_values(*self._filter_last_valid_range)
+        self.time_range.setToolTip("Drag either handle; Tab and arrow keys work too. Exact fields also support dates outside the slider's displayed range.")
+        time_form.addRow(self.time_range)
+        self.time_filter_start = QLineEdit(format_year(self.settings.time_filter_start, self.settings.time_filter_scale))
+        self.time_filter_end = QLineEdit(format_year(self.settings.time_filter_end, self.settings.time_filter_scale))
+        self._filter_field_snapshot = ((self.time_filter_start.text(), self.time_filter_end.text()),
+                                       self._filter_last_valid_range)
+        for widget, label in ((self.time_filter_start, "Start year"), (self.time_filter_end, "End year")):
+            widget.setAccessibleName(label)
+            widget.setToolTip("Older to newer. Examples: 500 BCE, 1900 CE, 11700 BP, 66 Ma, 4.6 Ga. BP and age units count back from 1950.")
+        year_fields = QWidget()
+        year_layout = QHBoxLayout(year_fields)
+        year_layout.setContentsMargins(0, 0, 0, 0)
+        year_layout.setSpacing(8)
+        for title, field in (("Start", self.time_filter_start), ("End", self.time_filter_end)):
+            column = QVBoxLayout()
+            column.setSpacing(3)
+            label = QLabel(title)
+            label.setBuddy(field)
+            column.addWidget(label)
+            column.addWidget(field)
+            year_layout.addLayout(column, 1)
+        time_form.addRow(year_fields)
+        self.time_filter_include_undated = QCheckBox("Include images with unknown dates")
+        self.time_filter_include_undated.setChecked(self.settings.time_filter_include_undated)
+        self.time_filter_include_undated.setToolTip("When off, images need source-supported dates for the selected date type. Many scientific diagrams and objects have no dated metadata.")
+        time_form.addRow(self.time_filter_include_undated)
+        self.form.addRow(self.time_filter_panel)
+        self.exclude_ai_generated = QCheckBox("Exclude AI-generated images")
+        self.exclude_ai_generated.setChecked(self.settings.exclude_ai_generated)
+        self.exclude_ai_generated.setToolTip("Exclude images labeled as AI-generated in source metadata. Missing or inaccurate labels can still let generated images through; this is not a visual detector.")
+        self.form.addRow(self.exclude_ai_generated)
+        self.filter_status_label = QLabel()
+        self.filter_status_label.setObjectName("status")
+        self.filter_status_label.setWordWrap(True)
+        self.filter_status_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.form.addRow(self.filter_status_label)
+        self.time_filter_enabled.toggled.connect(self._image_filters_edited)
+        self.time_filter_target.currentIndexChanged.connect(self._image_filters_edited)
+        self.time_filter_scale.currentIndexChanged.connect(self._time_scale_changed)
+        self.time_filter_include_undated.toggled.connect(self._image_filters_edited)
+        self.exclude_ai_generated.toggled.connect(self._image_filters_edited)
+        self.time_filter_start.textEdited.connect(self._time_fields_edited)
+        self.time_filter_end.textEdited.connect(self._time_fields_edited)
+        self.time_range.valuesChanged.connect(self._time_slider_changed)
+        self.time_range.sliderPressed.connect(self._filter_debounce.stop)
+        self.time_range.sliderReleased.connect(self._image_filters_edited)
+        self.time_range.set_handle_labels(self.time_filter_start.text(), self.time_filter_end.text())
+        self._update_image_filter_controls()
         self.interpreter = QComboBox()
         for label, value in (("Full session · local model", "ollama"), ("Basic phrase analysis", "contextual"),
                              ("spaCy phrases (optional)", "spacy")):
@@ -505,9 +582,87 @@ class MainWindow(QMainWindow):
             "display_index": self.display.currentData() or 0,
         }.items():
             setattr(settings, name, value)
+        for name, value in self._collect_image_filters().items():
+            setattr(settings, name, value)
         if require_recording and settings.audio_mode == "file" and not Path(settings.audio_file).is_file():
             raise ValueError("Choose an existing audio recording first.")
         return settings.validate()
+
+    def _collect_image_filters(self) -> dict:
+        try:
+            texts = self.time_filter_start.text(), self.time_filter_end.text()
+            previous_texts, previous_values = self._filter_field_snapshot
+            start, end = (previous_values[index] if text == previous_texts[index] else parse_year(text)
+                          for index, text in enumerate(texts))
+            if start > end:
+                raise ValueError("Start must be older than or equal to end.")
+        except ValueError:
+            if self.time_filter_enabled.isChecked():
+                raise
+            start, end = self._filter_last_valid_range
+        else:
+            self._filter_last_valid_range = start, end
+            self._filter_field_snapshot = texts, (start, end)
+        return {"time_filter_enabled": self.time_filter_enabled.isChecked(),
+                "time_filter_target": self.time_filter_target.currentData(),
+                "time_filter_start": start, "time_filter_end": end,
+                "time_filter_scale": self.time_filter_scale.currentData(),
+                "time_filter_include_undated": self.time_filter_include_undated.isChecked(),
+                "exclude_ai_generated": self.exclude_ai_generated.isChecked()}
+
+    def _update_image_filter_controls(self) -> None:
+        if not hasattr(self, "time_filter_panel"):
+            return
+        self.time_filter_enabled.setEnabled(not self._stopping)
+        self.exclude_ai_generated.setEnabled(not self._stopping)
+        self.time_filter_panel.setEnabled(self.time_filter_enabled.isChecked() and not self._stopping)
+
+    def _time_fields_edited(self, *args) -> None:
+        try:
+            filters = self._collect_image_filters()
+            self.time_range.set_values(filters["time_filter_start"], filters["time_filter_end"])
+            self.time_range.set_handle_labels(self.time_filter_start.text(), self.time_filter_end.text())
+        except ValueError:
+            pass
+        self._image_filters_edited()
+
+    def _time_slider_changed(self, start, end) -> None:
+        scale = self.time_filter_scale.currentData()
+        self.time_filter_start.setText(format_year(start, scale))
+        self.time_filter_end.setText(format_year(end, scale))
+        self._filter_field_snapshot = ((self.time_filter_start.text(), self.time_filter_end.text()), (start, end))
+        self.time_range.set_handle_labels(self.time_filter_start.text(), self.time_filter_end.text())
+        if not self.time_range.is_dragging:
+            self._image_filters_edited()
+
+    def _time_scale_changed(self, *args) -> None:
+        self.time_range.set_scale(self.time_filter_scale.currentData())
+        self._image_filters_edited()
+
+    def _image_filters_edited(self, *args) -> None:
+        self._update_image_filter_controls()
+        try:
+            self._collect_image_filters()
+        except ValueError as exc:
+            self._filter_debounce.stop()
+            self.filter_status_label.setText(str(exc))
+            return
+        self.filter_status_label.setText("Image filters apply live. Save settings to keep them." if self._monitoring
+                                         else "Image filters apply on Start. Save settings to keep them.")
+        self._filter_debounce.start()
+
+    def _apply_image_filters_live(self) -> None:
+        if self._closing or self._stopping or not self._monitoring:
+            return
+        try:
+            settings = self._read_settings(require_recording=False)
+            update = getattr(self.pipeline, "update_image_filters", None)
+            if callable(update):
+                update(deepcopy(settings))
+        except ValueError as exc:
+            self.filter_status_label.setText(str(exc))
+        except Exception:
+            self.filter_status_label.setText("Could not update image filters. Try again.")
 
     def _preset_selected(self, *args) -> None:
         preset = AUDIOBOOK_PRESETS.get(self.audiobook_preset.currentData())
@@ -884,6 +1039,7 @@ class MainWindow(QMainWindow):
         self._preset_selected()
         self._update_context_controls()
         self._update_feedback_controls()
+        self._update_image_filter_controls()
         if not active:
             is_file = self.audio_mode.currentData() == "file"
             self.audio_file.setEnabled(is_file)

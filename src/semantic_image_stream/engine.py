@@ -22,6 +22,8 @@ from .semantic_analysis import TopicGate, build_analyzer, fallback_queries, sani
 log = logging.getLogger(__name__)
 GPU_LOCK = threading.Lock()
 _SOURCE_PAUSED = object()
+IMAGE_FILTER_FIELDS = ("time_filter_enabled", "time_filter_target", "time_filter_start", "time_filter_end",
+                       "time_filter_scale", "time_filter_include_undated", "exclude_ai_generated")
 
 
 def _interpreter_key(settings):
@@ -119,7 +121,7 @@ def export_image(candidate: ImageCandidate, destination: str | Path) -> tuple[Pa
 
 class Pipeline:
     def __init__(self, settings, on_event, session_state=None):
-        # Runtime receives a snapshot, so changing controls never races workers.
+        # Input/model settings are snapshots; image filters change on the worker loop.
         self.settings = replace(settings, providers=list(settings.providers)).validate()
         self.on_event = on_event
         self.stop_event = threading.Event()
@@ -156,6 +158,52 @@ class Pipeline:
         self._feedback_request_lock = threading.Lock()
         self._feedback_requests = deque()
         self._feedback_worker_running = False
+        self._loop = None
+        self._image_filter_revision = 0
+
+    def update_image_filters(self, settings):
+        """Apply validated filter controls without restarting capture or narration."""
+        snapshot = replace(settings, providers=list(settings.providers)).validate()
+        values = {name: getattr(snapshot, name) for name in IMAGE_FILTER_FIELDS}
+
+        def apply():
+            from .temporal_filter import filter_identity
+            previous = (filter_identity(self.settings), self.settings.exclude_ai_generated)
+            for name, value in values.items():
+                setattr(self.settings, name, value)
+            if previous == (filter_identity(self.settings), self.settings.exclude_ai_generated):
+                return
+            self._image_filter_revision += 1
+            self._generation += 1
+            with self._segments_lock:
+                self.session_state.playback_generation += 1
+            self._approved_images.clear()
+            self._query_pages.clear()
+            self._refresh_queries.clear()
+            self._fresh_query_cycles.clear()
+            self._emit_context("ready", "Image filters updated; the spoken story is retained.", playback_changed=True)
+            pending = getattr(self, "topic_queue", None)
+            if pending is not None:
+                while not pending.empty():
+                    pending.get_nowait()
+                if self._latest_topic and self._latest_topic.query:
+                    pending.put_nowait((self._generation, self._latest_topic))
+
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(apply)
+        else:
+            apply()
+
+    def _image_filter_match(self, candidate):
+        from .search_providers import is_known_generated
+        from .temporal_filter import filter_match
+        if (self.settings.exclude_ai_generated
+                and (getattr(candidate, "ai_generated", None) is True
+                     or is_known_generated(candidate.title, candidate.description))):
+            return False, "Marked as AI-generated"
+        result = filter_match(self.settings, candidate)
+        return result.matched, result.reason
 
     @property
     def running(self):
@@ -196,6 +244,7 @@ class Pipeline:
             self.emit("stopped", None)
 
     async def _main(self):
+        self._loop = asyncio.get_running_loop()
         from .audio_capture import create_capture
         from .transcription import FasterWhisperTranscriber
         from .search_providers import build_providers
@@ -557,6 +606,7 @@ class Pipeline:
             rejected_urls = set(self._rejected_image_urls)
         self._approved_images = {url: image for url, image in self._approved_images.items()
                                  if image.path.is_file() and url not in seen_urls and url not in rejected_urls
+                                 and self._image_filter_match(image)[0]
                                  and not is_duplicate(image.phash, seen_hashes)}
 
     def _emit_context(self, phase, message, playback_changed=False, retaining=False):
@@ -735,6 +785,14 @@ class Pipeline:
         unique = [candidate for url, candidate in by_url.items()
                   if url not in self._approved_images and url not in seen_urls]
         attempt_stats["found"] += len(unique)
+        filtered = []
+        for candidate in unique:
+            matched, reason = self._image_filter_match(candidate)
+            if matched:
+                filtered.append(candidate)
+            else:
+                attempt_failures[reason] += 1
+        unique = filtered
         # Rank metadata before prefetch to start with promising source
         # images; retain other candidates for actual multimodal ranking.
         if ranker.name == "metadata" and unique:
@@ -757,7 +815,11 @@ class Pipeline:
                 message = f"{accepted} relevant images ready · {downloaded} downloaded from {len(unique)} results"
             elif phase == "empty":
                 if not unique:
-                    message = "No images found for this query."
+                    filter_rejections = {reason: count for reason, count in attempt_failures.items()
+                                         if reason.startswith(("The recorded period", "No supported period", "Marked as AI"))}
+                    message = ("No results passed the selected time/AI filters. " +
+                               "; ".join(f"{count} {reason.lower()}" for reason, count in filter_rejections.items())
+                               if filter_rejections else "No images found for this query.")
                 elif not downloaded:
                     details = "; ".join(f"{count} {reason.lower()}" for reason, count in failures.items())
                     message = f"Found {len(unique)} results, but no images could be downloaded. {details}"
@@ -791,7 +853,13 @@ class Pipeline:
                             and cached.width * cached.height <= self.settings.max_image_pixels
                             and cached.path.stat().st_size <= self.settings.max_download_bytes
                             and self.settings.min_aspect_ratio <= ratio <= self.settings.max_aspect_ratio):
-                        return cached, None
+                        # Keep cached validated pixels while using current source
+                        # date/attribution metadata. Embedded AI marks remain known.
+                        updated = replace(candidate, local_path=cached.local_path, width=cached.width,
+                                          height=cached.height, phash=cached.phash,
+                                          ai_generated=(True if cached.ai_generated is True else candidate.ai_generated),
+                                          temporal_evidence=(candidate.temporal_evidence or cached.temporal_evidence))
+                        return updated, None
                 if candidate.image_url in rejected_urls:
                     return None, rejected_urls[candidate.image_url]
                 try:
@@ -872,6 +940,10 @@ class Pipeline:
                     excluded_urls = self._displayed_urls | self._rejected_image_urls
                     hashes = list(self._recent_hashes)
                 for candidate in ranked:
+                    matched, reason = self._image_filter_match(candidate)
+                    if not matched:
+                        failures[reason] += 1
+                        continue
                     other_hashes = [approved.phash for url, approved in self._approved_images.items()
                                     if url != candidate.image_url]
                     if (candidate.image_url not in excluded_urls and candidate.image_url not in self._approved_images
@@ -903,11 +975,16 @@ class Pipeline:
         return bool(published), ranking_failed
 
     async def _query_candidates(self, query, providers, cache, page=0, refresh=False):
+        from .temporal_filter import filter_identity, search_hints
+        revision = self._image_filter_revision
         self._last_query_failed = False
         self._last_query_incomplete = False
         self._last_query_all_paused = False
         self._last_query_succeeded = False
         identity = [query.casefold(), self.settings.providers, self.settings.results_per_provider]
+        if self.settings.time_filter_enabled or not self.settings.exclude_ai_generated:
+            identity.append({"time_filter": filter_identity(self.settings),
+                             "exclude_ai_generated": self.settings.exclude_ai_generated})
         if "duckduckgo" in self.settings.providers:
             # Older combined cache entries can contain only the other sources'
             # partial results after DDGS's malformed HTTP/2 header failed.
@@ -921,15 +998,37 @@ class Pipeline:
             self._last_query_succeeded = True
             return cached
         self.emit("status", "Retrieving existing images from selected sources…")
+        hints = search_hints(self.settings) if (self.settings.time_filter_enabled
+                 and self.settings.time_filter_target == "depicted"
+                 and self.settings.time_filter_start < -100_000) else ()
+        # Use one geological unit at a time. Calendar bounds are metadata
+        # filters, not literal words every source document must contain.
+        hint = hints[page % len(hints)] if hints else ""
+        source_query = (query if not hint or hint.casefold() in query.casefold()
+                        else sanitize_query(f"{hint} {query}"))[:180].strip()
+        hinted_page = page // len(hints) if hints and source_query != query else page
         async def search(provider):
             if time.monotonic() < self._source_retry_at.get(provider.name, 0):
                 return _SOURCE_PAUSED
-            if not page:
-                return await provider.search(query, self.settings.results_per_provider)
-            paged = getattr(provider, "search_page", None)
-            return await paged(query, self.settings.results_per_provider, page) if paged else []
+            async def request(text):
+                selected_page = hinted_page if text == source_query else page
+                if not selected_page:
+                    return await provider.search(text, self.settings.results_per_provider)
+                paged = getattr(provider, "search_page", None)
+                return await paged(text, self.settings.results_per_provider, selected_page) if paged else []
+            found = await request(source_query)
+            if (source_query != query and revision == self._image_filter_revision
+                    and not self.stop_event.is_set()
+                    and not any(self._image_filter_match(item)[0] for item in found)):
+                # A source may not index period words. Try the original story
+                # query too; its results still require source-backed dates.
+                found.extend(await request(query))
+            return found
         results = await asyncio.gather(*(search(p) for p in providers),
                                        return_exceptions=True)
+        if revision != self._image_filter_revision:
+            # An old request cannot fill a new range or create a false empty cache.
+            return []
         candidates = []
         succeeded = True
         self._last_query_all_paused = bool(results) and all(result is _SOURCE_PAUSED for result in results)

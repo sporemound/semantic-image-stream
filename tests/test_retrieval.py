@@ -17,7 +17,7 @@ from semantic_image_stream.image_download import DownloadError, ImageDownloader,
 from semantic_image_stream.models import ImageCandidate
 from semantic_image_stream.search_providers import (
     DuckDuckGoProvider, InternetArchiveProvider, OpenverseProvider, ProviderError,
-    WikimediaProvider, _duckduckgo_client_factory, build_providers, plain_text, sanitize_query,
+    WikimediaProvider, _duckduckgo_client_factory, build_providers, is_known_generated, plain_text, sanitize_query,
 )
 
 
@@ -30,12 +30,12 @@ async def public_dns(host, port):
     return ["93.184.216.34"]
 
 
-def png(width=120, height=80, text=None):
+def png(width=120, height=80, text=None, text_key="Description"):
     output = io.BytesIO()
     image = Image.new("RGB", (width, height), (30, 100, 60))
     info = PngImagePlugin.PngInfo()
     if text is not None:
-        info.add_text("Description", text)
+        info.add_text(text_key, text)
     image.save(output, format="PNG", pnginfo=info)
     return output.getvalue()
 
@@ -508,6 +508,265 @@ async def test_generated_embedded_metadata_rejected(settings):
         with pytest.raises(DownloadError, match="Embedded metadata"):
             await downloader.download(candidate())
     assert list(downloader.directory.iterdir()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["wikimedia", "openverse", "archive", "duckduckgo"])
+@pytest.mark.parametrize("exclude", [True, False])
+async def test_ai_source_filter_is_optional_and_preserves_explicit_marker(settings, source, exclude):
+    settings.exclude_ai_generated = exclude
+    if source == "wikimedia":
+        data = {"query": {"pages": [{"title": "File:Arctic camp.jpg", "imageinfo": [{
+            "url": "https://images.example.org/camp.jpg", "mime": "image/jpeg",
+            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Arctic_camp.jpg",
+            "extmetadata": {"Categories": {"value": "AI-generated images"}},
+        }]}]}}
+        async with client(lambda _: httpx.Response(200, json=data)) as http:
+            results = await WikimediaProvider(settings, client=http).search("Arctic camp", 2)
+    elif source == "openverse":
+        data = {"results": [{"title": "Arctic camp", "url": "https://images.example.org/camp.jpg",
+                             "foreign_landing_url": "https://source.example.org/camp", "is_ai_generated": "TRUE"}]}
+        async with client(lambda _: httpx.Response(200, json=data)) as http:
+            results = await OpenverseProvider(settings, client=http).search("Arctic camp", 2)
+    elif source == "archive":
+        data = {"metadata": {"title": "Arctic camp", "subject": ["AI-generated"]},
+                "files": [{"name": "original.jpg", "source": "original"}]}
+        async with client(lambda _: httpx.Response(200, json={})) as http:
+            results = InternetArchiveProvider(settings, client=http)._parse_item("camp", data)
+    else:
+        class DDGS:
+            def __init__(self, **kwargs):
+                pass
+
+            def images(self, query, **kwargs):
+                assert kwargs["backend"] == "duckduckgo"
+                return [{"title": "AI generated Arctic camp", "image": "https://images.example.org/camp.jpg",
+                         "url": "https://source.example.org/camp"}]
+
+        results = await DuckDuckGoProvider(settings, ddgs_factory=DDGS).search("Arctic camp", 2)
+    if exclude:
+        assert results == []
+    else:
+        assert len(results) == 1 and results[0].ai_generated is True
+        assert ImageCandidate.from_dict(results[0].to_dict()).ai_generated is True
+
+
+@pytest.mark.asyncio
+async def test_unmarked_and_explicit_negative_ai_metadata_remain_distinct(settings):
+    base = {"title": "Arctic camp", "url": "https://images.example.org/camp.jpg",
+            "foreign_landing_url": "https://source.example.org/camp"}
+    data = {"results": [base, dict(base, is_ai_generated=False), dict(base, is_ai_generated="false"),
+                        dict(base, is_ai_generated="unknown")]}
+    async with client(lambda _: httpx.Response(200, json=data)) as http:
+        results = await OpenverseProvider(settings, client=http).search("Arctic camp", 4)
+    assert [image.ai_generated for image in results] == [None, False, False, None]
+
+
+@pytest.mark.asyncio
+async def test_archive_file_ai_markers_are_optional_without_admitting_derivatives(settings):
+    data = {"metadata": {"title": "Arctic camp", "ai_generated": False}, "files": [
+        {"name": "AI-generated camp.jpg", "source": "original"},
+        {"name": "regular.jpg", "source": "original"},
+        {"name": "__ia_thumb.jpg", "source": "original"},
+        {"name": "AI-generated-thumbnail.jpg", "source": "derivative"},
+    ]}
+    async with client(lambda _: httpx.Response(200, json={})) as http:
+        provider = InternetArchiveProvider(settings, client=http)
+        assert [image.ai_generated for image in provider._parse_item("camp", data)] == [False]
+        settings.exclude_ai_generated = False
+        allowed = provider._parse_item("camp", data)
+    assert len(allowed) == 2 and [image.ai_generated for image in allowed] == [True, False]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marker", ["source_text", "source_flag", "embedded"])
+async def test_allowed_generated_downloads_keep_marker_after_clean_reencoding_and_cache(settings, marker):
+    from semantic_image_stream.cache import Cache
+
+    settings.exclude_ai_generated = False
+    image = candidate()
+    if marker == "source_text":
+        image.title = "AI-generated botanical plate"
+    if marker == "source_flag":
+        image.ai_generated = True
+    body = png(text="AI-generated with Stable Diffusion" if marker == "embedded" else None)
+    async with client(lambda _: httpx.Response(200, content=body, headers={"content-type": "image/png"})) as http:
+        downloaded = await ImageDownloader(settings, client=http, resolver=public_dns).download(image)
+    assert downloaded.ai_generated is True and downloaded.path.is_file()
+    with Image.open(downloaded.path) as decoded:
+        assert not decoded.info, "Re-encoded pixels omit source textual metadata"
+    cache = Cache(settings)
+    try:
+        cache.put_image(downloaded)
+        cache.put_query("ai-filter-off", [downloaded])
+        assert cache.get_image(downloaded.image_url).ai_generated is True
+        assert cache.get_query("ai-filter-off")[0].ai_generated is True
+    finally:
+        cache.close()
+
+
+@pytest.mark.asyncio
+async def test_ai_source_flag_is_rejected_before_network_with_default_filter(settings):
+    image = candidate()
+    image.ai_generated = True
+    calls = []
+    async with client(lambda request: calls.append(request) or httpx.Response(200)) as http:
+        with pytest.raises(DownloadError, match="Source metadata"):
+            await ImageDownloader(settings, client=http, resolver=public_dns).download(image)
+    assert calls == []
+
+
+@pytest.mark.parametrize("text,generated", [
+    ("AI-generated photograph of a camp", True),
+    ("Created using Stable Diffusion", True),
+    ("Generated by Midjourney", True),
+    ("AI-generated diagram of diffusion architecture", True),
+    ("Not AI-generated", False),
+    ("This image is not an AI generated picture", False),
+    ("Non-AI-generated photographs", False),
+    ("AI-generated: false", False),
+    ("Human-drawn diagram of Stable Diffusion architecture", False),
+    ("Hand-drawn diagram explaining AI-generated image workflows", False),
+    ("Stable Diffusion architecture", False),
+    ("Midjourney research results", False),
+])
+def test_ai_labels_distinguish_creation_evidence_from_negation_and_discussion(text, generated):
+    assert is_known_generated(text) is generated
+
+
+@pytest.mark.asyncio
+async def test_human_diagrams_about_ai_and_negative_labels_are_not_blocked(settings):
+    base = {"url": "https://images.example.org/diagram.png", "foreign_landing_url": "https://source.example.org/diagram"}
+    data = {"results": [dict(base, title="Human-drawn diagram of Stable Diffusion architecture",
+                             description="Hand-drawn diagram explaining AI-generated image workflows",
+                             tags=[{"name": "Stable Diffusion"}]),
+                        dict(base, title="Scientific schematic", description="Not AI-generated",
+                             tags=[{"name": "Non-AI-generated diagrams"}]),
+                        dict(base, title="Not AI-generated", is_ai_generated=True)]}
+    async with client(lambda _: httpx.Response(200, json=data)) as http:
+        images = await OpenverseProvider(settings, client=http).search("diffusion architecture", 3)
+    assert len(images) == 2 and all(image.ai_generated is None for image in images)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key,value", [("Software", "Stable Diffusion 2.1"),
+                                       ("workflow", '{"software":"ComfyUI","nodes":[]}')])
+async def test_embedded_ai_software_and_workflow_markers_respect_optional_filter(settings, key, value):
+    body = png(text=value, text_key=key)
+    async with client(lambda _: httpx.Response(200, content=body, headers={"content-type": "image/png"})) as http:
+        downloader = ImageDownloader(settings, client=http, resolver=public_dns)
+        with pytest.raises(DownloadError, match="Embedded metadata"):
+            await downloader.download(candidate())
+        settings.exclude_ai_generated = False
+        allowed = await downloader.download(candidate())
+    assert allowed.ai_generated is True
+
+
+@pytest.mark.asyncio
+async def test_embedded_description_of_human_ai_diagram_is_not_generation_software(settings):
+    body = png(text="Human-drawn diagram of Stable Diffusion architecture")
+    async with client(lambda _: httpx.Response(200, content=body, headers={"content-type": "image/png"})) as http:
+        image = await ImageDownloader(settings, client=http, resolver=public_dns).download(candidate())
+    assert image.path.is_file() and image.ai_generated is None
+
+
+@pytest.mark.asyncio
+async def test_commons_separates_fossil_period_from_original_image_creation_date(settings):
+    from semantic_image_stream.temporal_filter import filter_match
+
+    data = {"query": {"pages": [{"title": "File:Jurassic ammonite fossil.jpg", "imageinfo": [{
+        "url": "https://images.example.org/fossil.jpg", "mime": "image/jpeg",
+        "descriptionurl": "https://commons.wikimedia.org/wiki/File:Fossil.jpg",
+        "timestamp": "2025-04-03T00:00:00Z",
+        "extmetadata": {"DateTimeOriginal": {"value": "2021-06-12 10:30:00"},
+                        "ImageDescription": {"value": "Jurassic ammonite fossil."},
+                        "Categories": {"value": "Jurassic fossils|Photographs taken in 2021"}},
+    }]}]}}
+
+    def handler(request):
+        assert "DateTimeOriginal" in request.url.params["iiextmetadatafilter"].split("|")
+        assert "timestamp" not in request.url.params["iiprop"].split("|")
+        return httpx.Response(200, json=data)
+
+    async with client(handler) as http:
+        image = (await WikimediaProvider(settings, client=http).search("ammonite fossil", 1))[0]
+    created = [row for row in image.temporal_evidence if row["target"] == "created"]
+    depicted = [row for row in image.temporal_evidence if row["target"] == "depicted"]
+    assert len(created) == 1 and created[0]["start"] == created[0]["end"] == 2021
+    assert created[0]["source"] == "Commons DateTimeOriginal"
+    assert depicted and all(row["end"] < -100_000_000 for row in depicted)
+    settings.time_filter_enabled = True
+    settings.time_filter_start, settings.time_filter_end = -200_000_000, -150_000_000
+    settings.time_filter_target = "depicted"
+    assert filter_match(settings, image).matched
+    settings.time_filter_target = "created"
+    assert not filter_match(settings, image).matched
+    settings.time_filter_start, settings.time_filter_end = 2021, 2021
+    assert filter_match(settings, image).matched
+    assert ImageCandidate.from_dict(image.to_dict()).temporal_evidence == image.temporal_evidence
+
+
+@pytest.mark.asyncio
+async def test_commons_upload_timestamp_is_not_creation_or_depicted_date(settings):
+    data = {"query": {"pages": [{"title": "File:Hubble galaxy.jpg", "imageinfo": [{
+        "url": "https://images.example.org/galaxy.jpg", "mime": "image/jpeg",
+        "descriptionurl": "https://commons.wikimedia.org/wiki/File:Galaxy.jpg",
+        "timestamp": "1999-02-03T00:00:00Z",
+        "extmetadata": {"DateTime": {"value": "1999-02-03"},
+                        "ImageDescription": {"value": "Galaxy and stars"}},
+    }]}]}}
+    async with client(lambda _: httpx.Response(200, json=data)) as http:
+        image = (await WikimediaProvider(settings, client=http).search("galaxy", 1))[0]
+    assert image.temporal_evidence == []
+
+
+@pytest.mark.asyncio
+async def test_archive_original_item_date_is_separate_from_subject_and_ingest_dates(settings):
+    data = {"metadata": {"title": "Ancient temple, 500 BCE", "description": "A reconstruction of a temple in 500 BCE.",
+                         "date": "1900", "publicdate": "2010-01-02", "addeddate": "2008-04-01"},
+            "files": [{"name": "plate.jpg", "source": "original"}]}
+    async with client(lambda _: httpx.Response(200, json={})) as http:
+        provider = InternetArchiveProvider(settings, client=http)
+        image = provider._parse_item("temple", data)[0]
+        without_original = dict(data, metadata={key: value for key, value in data["metadata"].items() if key != "date"})
+        unknown_created = provider._parse_item("temple", without_original)[0]
+    created = [row for row in image.temporal_evidence if row["target"] == "created"]
+    depicted = [row for row in image.temporal_evidence if row["target"] == "depicted"]
+    assert len(created) == 1 and created[0]["start"] == created[0]["end"] == 1900
+    assert depicted and all(row["start"] == row["end"] == -499 for row in depicted)
+    assert not any(row["target"] == "created" for row in unknown_created.temporal_evidence)
+
+
+@pytest.mark.asyncio
+async def test_openverse_index_dates_do_not_become_creation_evidence_or_request_parameters(settings):
+    settings.time_filter_enabled = True
+    settings.time_filter_target = "created"
+    settings.time_filter_start, settings.time_filter_end = 1800, 1900
+    data = {"results": [{"title": "Cretaceous dinosaur fossil", "url": "https://images.example.org/fossil.jpg",
+                         "foreign_landing_url": "https://source.example.org/fossil", "created_on": "1865-01-01",
+                         "indexed_on": "2024-01-01", "tags": [{"name": "geology"}]}]}
+
+    def handler(request):
+        assert dict(request.url.params) == {"q": "dinosaur fossil", "page_size": "1"}
+        return httpx.Response(200, json=data)
+
+    async with client(handler) as http:
+        image = (await OpenverseProvider(settings, client=http).search("dinosaur fossil", 1))[0]
+    assert image.temporal_evidence and all(row["target"] == "depicted" for row in image.temporal_evidence)
+
+
+@pytest.mark.asyncio
+async def test_duckduckgo_explicit_subject_period_has_no_invented_creation_date(settings):
+    class DDGS:
+        def __init__(self, **kwargs):
+            pass
+
+        def images(self, query, **kwargs):
+            return [{"title": "Cambrian trilobite fossil", "image": "https://images.example.org/fossil.jpg",
+                     "url": "https://source.example.org/fossil", "date": "2024-01-01"}]
+
+    image = (await DuckDuckGoProvider(settings, ddgs_factory=DDGS).search("trilobite fossil", 1))[0]
+    assert image.temporal_evidence and all(row["target"] == "depicted" for row in image.temporal_evidence)
 
 
 @pytest.mark.asyncio
