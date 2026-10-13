@@ -249,7 +249,7 @@ class MainWindow(QMainWindow):
         self.feedback_status_label.setTextFormat(Qt.TextFormat.PlainText)
         feedback_row.addWidget(self.feedback_status_label, 1)
         self.fullscreen_title_button = QPushButton("Fullscreen with title")
-        self.fullscreen_title_button.setToolTip("Show the image's own title in a large serif caption. Escape returns to controls.")
+        self.fullscreen_title_button.setToolTip("Show the image title, artist, source, and rights credit. Escape returns to controls.")
         self.fullscreen_title_button.clicked.connect(lambda: self.toggle_fullscreen(with_title=True))
         feedback_row.addWidget(self.fullscreen_title_button)
         transport_column.addLayout(feedback_row)
@@ -336,7 +336,8 @@ class MainWindow(QMainWindow):
         providers = QWidget()
         provider_layout = QVBoxLayout(providers)
         provider_layout.setContentsMargins(0, 0, 0, 0)
-        for name, label in (("wikimedia", "Wikimedia Commons"), ("duckduckgo", "DuckDuckGo Images"),
+        for name, label in (("wikimedia", "Wikimedia Commons"), ("deviantart", "DeviantArt"),
+                            ("duckduckgo", "Web images (DuckDuckGo, Bing fallback)"),
                             ("openverse", "Openverse"), ("archive", "Internet Archive")):
             check = QCheckBox(label)
             check.setChecked(name in self.settings.providers)

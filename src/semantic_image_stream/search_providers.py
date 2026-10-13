@@ -423,6 +423,31 @@ def _duckduckgo_client_factory():
     from ddgs.ddgs import DDGS
 
     class DuckDuckGoClient(DDGS):
+        def images(self, query, **kwargs):
+            # Keep DuckDuckGo first. Its image endpoint can fail or return an
+            # empty batch, so use DDGS's Bing engine as a labelled fallback.
+            if kwargs.get("backend", "auto") != "duckduckgo":
+                return super().images(query, **kwargs)
+            duckduckgo_error = None
+            try:
+                rows = super().images(query, **kwargs)
+                if rows:
+                    return rows
+            except Exception as error:
+                duckduckgo_error = error
+            fallback = dict(kwargs)
+            fallback["backend"] = "bing"
+            try:
+                rows = super().images(query, **fallback)
+                for row in rows if isinstance(rows, list) else ():
+                    if isinstance(row, dict):
+                        row["_sis_backend"] = "bing"
+                return rows
+            except Exception:
+                if duckduckgo_error is not None:
+                    raise duckduckgo_error
+                raise
+
         def _get_engines(self, category, backend):
             # This engine hook is internal to DDGS 9.16; the search extra pins
             # that minor release. Native headers use primp's public setter.
@@ -479,12 +504,15 @@ class DuckDuckGoProvider:
             image_url, source_url = _https_url(row.get("image")), _source_url(row.get("url"))
             if not image_url or not source_url:
                 continue
+            backend = plain_text(row.get("_sis_backend"), max_length=40).casefold()
+            provider = "Bing Images" if backend == "bing" else self.name
             candidates.append(ImageCandidate(
-                image_url=image_url, source_url=source_url, title=title, provider=self.name,
+                image_url=image_url, source_url=source_url, title=title, provider=provider,
+                description=plain_text(row.get("description")),
                 width=_dimension(row.get("width")), height=_dimension(row.get("height")),
                 ai_generated=generated,
                 temporal_evidence=extract_depicted_evidence(title, plain_text(row.get("description")),
-                                                            source="DuckDuckGo source subject metadata"),
+                                                            source=f"{provider} subject metadata"),
             ))
         return candidates
 
@@ -632,6 +660,11 @@ def _validate_page(page: int) -> None:
 
 
 def build_providers(settings: Settings) -> list[SearchProvider]:
+    # Lazy import avoids a module cycle while allowing the DeviantArt provider
+    # to reuse the bounded HTTP and metadata helpers above.
+    from .deviantart_provider import DeviantArtProvider
+
     constructors = {"wikimedia": WikimediaProvider, "duckduckgo": DuckDuckGoProvider,
-                    "openverse": OpenverseProvider, "archive": InternetArchiveProvider}
+                    "deviantart": DeviantArtProvider, "openverse": OpenverseProvider,
+                    "archive": InternetArchiveProvider}
     return [constructors[name](settings) for name in dict.fromkeys(settings.providers)]

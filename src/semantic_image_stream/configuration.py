@@ -107,7 +107,7 @@ class Settings:
             raise ValueError("transition_seconds must be between 0 and 5")
         if (not isinstance(self.providers, list) or not self.providers
                 or not all(isinstance(p, str) for p in self.providers)
-                or set(self.providers) - {"wikimedia", "duckduckgo", "openverse", "archive"}):
+                or set(self.providers) - {"wikimedia", "duckduckgo", "deviantart", "openverse", "archive"}):
             raise ValueError("Select at least one supported image provider")
         if not isinstance(self.display_index, int) or self.display_index < 0:
             raise ValueError("display_index must be a nonnegative integer")

@@ -39,7 +39,7 @@ training_dir = "" # blank = local training folder, then bundled public starter p
 use_story_examples = true # local human reasoning examples; never facts about your book
 context_cpu_threads = 6
 context_timeout = 180.0
-providers = ["wikimedia"] # priority order; duckduckgo, openverse, archive also available
+providers = ["wikimedia"] # priority; deviantart, duckduckgo (Bing fallback), openverse, archive available
 results_per_provider = 10
 prefetch_count = 6
 min_width = 480

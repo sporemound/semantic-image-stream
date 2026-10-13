@@ -12,6 +12,24 @@ from PySide6.QtWidgets import QWidget
 from .models import ImageCandidate
 
 
+_PROVIDER_LABELS = {
+    "archive": "Internet Archive",
+    "deviantart": "DeviantArt",
+    "duckduckgo": "DuckDuckGo Images",
+    "openverse": "Openverse",
+    "wikimedia": "Wikimedia Commons",
+}
+
+
+def _overlay_text(value, limit: int = 1200) -> str:
+    return " ".join(value.split())[:limit] if isinstance(value, str) else ""
+
+
+def _provider_label(value: str) -> str:
+    text = _overlay_text(value, 200)
+    return _PROVIDER_LABELS.get(text.casefold(), text or "Unknown source")
+
+
 class SlideshowController(QObject):
     current_changed = Signal(object)
     history_changed = Signal(object)
@@ -168,6 +186,7 @@ class ImageCanvas(QWidget):
         self.current_pixmap = QPixmap()
         self.previous_pixmap = QPixmap()
         self.current_title = ""
+        self.current_credit = ""
         self.title_overlay_visible = False
         self._title_layout_cache = None
         self.transition = "crossfade"
@@ -195,6 +214,7 @@ class ImageCanvas(QWidget):
             self.previous_pixmap = QPixmap()
             self.current_pixmap = QPixmap()
             self.current_title = ""
+            self.current_credit = ""
             self._title_layout_cache = None
             self.update()
             return True
@@ -209,7 +229,18 @@ class ImageCanvas(QWidget):
             return False
         self.previous_pixmap = self.current_pixmap
         self.current_pixmap = QPixmap.fromImage(image)
-        self.current_title = " ".join((candidate.title or "Untitled image").split())[:1200]
+        self.current_title = _overlay_text(candidate.title) or "Untitled image"
+        creator = _overlay_text(candidate.creator, 300)
+        provider = _provider_label(candidate.provider)
+        rights = _overlay_text(candidate.license, 500)
+        credit = []
+        if creator and creator.casefold() != "unknown":
+            credit.append(f"By {creator}")
+        if provider:
+            credit.append(provider)
+        if rights and not rights.casefold().startswith("unknown"):
+            credit.append(rights)
+        self.current_credit = " · ".join(credit)[:1200]
         self._title_layout_cache = None
         self._started = time.monotonic()
         random.Random(candidate.image_url).shuffle(self._tiles)
@@ -237,13 +268,24 @@ class ImageCanvas(QWidget):
         rect = QRectF((self.width() - width) / 2, (self.height() - height) / 2, width, height)
         painter.drawPixmap(rect, pixmap, QRectF(pixmap.rect()))
 
+    def _overlay_margin(self) -> int:
+        return max(18, min(96, int(self.width() * .055), int(self.height() * .07)))
+
+    def _credit_font(self) -> QFont:
+        font = QFont("Segoe UI")
+        font.setStyleHint(QFont.StyleHint.SansSerif)
+        font.setPixelSize(max(12, min(24, int(self.height() * .026), int(self.width() * .018))))
+        return font
+
     def _title_layout(self):
-        key = self.width(), self.height(), self.current_title
+        key = self.width(), self.height(), self.current_title, self.current_credit
         if self._title_layout_cache is not None and self._title_layout_cache[0] == key:
             return self._title_layout_cache[1]
-        margin = max(18, min(96, int(self.width() * .055), int(self.height() * .07)))
+        margin = self._overlay_margin()
         width = max(1, self.width() - 2 * margin)
         size = max(20, min(76, int(self.height() * .075), int(self.width() * .055)))
+        credit_height = QFontMetricsF(self._credit_font()).height() if self.current_credit else 0
+        credit_gap = max(7, int(self.height() * .012)) if self.current_credit else 0
         option = QTextOption()
         option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         for pixels in range(size, 11, -2):
@@ -270,10 +312,22 @@ class ImageCanvas(QWidget):
         if len(lines) > 3:
             lines = lines[:2] + [metrics.elidedText(self.current_title[starts[2]:], Qt.TextElideMode.ElideRight, width)]
         spacing = metrics.lineSpacing() * 1.05
-        bounds = QRectF(margin, self.height() - margin - spacing * len(lines), width, spacing * len(lines))
+        bottom = self.height() - margin - credit_height - credit_gap
+        bounds = QRectF(margin, bottom - spacing * len(lines), width, spacing * len(lines))
         result = font, lines, bounds
         self._title_layout_cache = key, result
         return result
+
+    def _credit_layout(self):
+        if not self.current_credit:
+            return None
+        margin = self._overlay_margin()
+        width = max(1, self.width() - 2 * margin)
+        font = self._credit_font()
+        metrics = QFontMetricsF(font)
+        text = metrics.elidedText(self.current_credit, Qt.TextElideMode.ElideRight, width)
+        bounds = QRectF(margin, self.height() - margin - metrics.height(), width, metrics.height())
+        return font, text, bounds
 
     def _draw_title(self, painter: QPainter) -> None:
         if not self.title_overlay_visible or not self.current_title:
@@ -298,6 +352,19 @@ class ImageCanvas(QWidget):
             painter.drawText(QPointF(bounds.left(), baseline), line)
             baseline += metrics.lineSpacing() * 1.05
         painter.restore()
+        credit_layout = self._credit_layout()
+        if credit_layout is not None:
+            credit_font, credit_text, credit_bounds = credit_layout
+            credit_metrics = QFontMetricsF(credit_font)
+            credit_baseline = credit_bounds.top() + credit_metrics.ascent()
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+            painter.setFont(credit_font)
+            painter.setPen(QColor(0, 0, 0, 180))
+            painter.drawText(QPointF(credit_bounds.left() + 1, credit_baseline + 2), credit_text)
+            painter.setPen(QColor("#c7d7df"))
+            painter.drawText(QPointF(credit_bounds.left(), credit_baseline), credit_text)
+            painter.restore()
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)

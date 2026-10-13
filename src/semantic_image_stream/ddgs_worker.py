@@ -79,7 +79,8 @@ def _run_request(request):
     for row in _rows(rows)[:limit]:
         bounded = {key: plain_text(row.get(key), max_length=length)
                    for key, length in {"title": 300, "image": 4096, "url": 4096,
-                                       "source": 300, "description": 2000}.items()}
+                                       "source": 300, "description": 2000,
+                                       "_sis_backend": 40}.items()}
         bounded.update(width=_dimension(row.get("width")), height=_dimension(row.get("height")))
         generated = _generated_status(row, row.get("title"), row.get("source"), row.get("description"))
         if generated is not None:
