@@ -50,6 +50,12 @@ Physical device unplugging, long unattended playback, physical multi-monitor swi
 
 Local `validation-output/` evidence includes the actual ASR/provider reports, attributed downloaded samples, CLIP comparisons and desktop screenshots. These generated evidence files/model caches are ignored by Git. A remote CI pass or manual validation should be added only after it actually completes.
 
+## Blank-preview follow-up
+
+A reported empty preview with working transcription revealed a scheduler starvation path: all downloads were awaited, then a topic-generation change discarded the whole batch. New regression coverage proves an acceptable first image appears before a blocked later download, inflight results are re-ranked for current context, unrelated old results remain rejected, and new topics wake the retry delay. Image status now persists independently of audio messages; decode failures do not masquerade as successful previews or exports. Download 429 responses expose safe reasons and respect exact-host Retry-After cooldowns.
+
+The updated suite passed 144 tests and lint. An actual prerecorded astronomy → local Whisper → live Wikimedia → Qt preview check displayed an attributed source image after 11.92 seconds using metadata ranking at the unchanged 0.30 threshold. This is a reproduction check of the corrected pipeline; the user's existing running process must be restarted to load the updated code.
+
 ## Next milestones
 
 1. Benchmark real recordings and noisy live speech; add multilingual semantic analyzers and better relationship/negation handling.

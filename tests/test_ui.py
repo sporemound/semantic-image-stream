@@ -225,3 +225,93 @@ def test_real_pipeline_capture_error_restores_controls_without_hanging(window, a
     assert window.start_button.isEnabled()
     assert window.threshold.isEnabled()
     assert "capture" in window.status_label.text().lower() or "audio" in window.status_label.text().lower()
+
+
+def test_decode_failure_remains_visible_after_ready_and_is_not_saved(window, image_factory, tmp_path):
+    path = tmp_path / "unreadable.jpg"
+    path.write_bytes(b"not an image")
+    unreadable = ImageCandidate("https://example.com/broken.jpg", "https://example.com/source", "broken", "wikimedia",
+                                local_path=str(path))
+    recorded = []
+
+    class RecordingPipeline:
+        def record_displayed(self, image):
+            recorded.append(image)
+
+        def stop(self):
+            pass
+
+    window.pipeline = RecordingPipeline()
+    window._handle_event(0, "images", [unreadable])
+    assert window.canvas.current_pixmap.isNull()
+    assert not window.save_button.isEnabled()
+    assert recorded == []
+    assert "Could not display image" in window.image_status_label.text()
+    window._handle_event(0, "status", "Ready: 1 relevant images")
+    assert "Could not display image" in window.image_status_label.text()
+    assert "Could not display image" in window.canvas.empty_message
+    valid = image_factory()
+    window._handle_event(0, "images", [valid])
+    assert not window.canvas.current_pixmap.isNull()
+    assert window.save_button.isEnabled()
+    assert "Could not display image" not in window.image_status_label.text()
+    assert recorded == [valid]
+    assert window._displayed_candidate is valid
+
+
+def test_retrieval_explains_empty_preview_and_audio_status_does_not_replace_it(window):
+    window._handle_event(0, "retrieval", {
+        "phase": "empty", "message": "No images could be loaded from the selected sources.",
+        "found": 9, "downloaded": 0, "rejected": 9, "accepted": 0,
+        "threshold": 0.3, "best_score": None, "failures": {"Image links unavailable": 9},
+    })
+    text = window.image_status_label.text()
+    assert "No images could be loaded" in text
+    assert "Found 9" in text and "Loaded 0" in text and "Ready 0" in text
+    assert "Image links unavailable: 9" in text
+    assert window.canvas.empty_message == text
+    window._handle_event(0, "status", "Listening: speakers")
+    assert window.image_status_label.text() == text
+    assert window.status_label.text() == "Listening: speakers"
+
+
+def test_retrieval_shows_relevance_minimum_and_paused_queue_in_empty_preview(window, image_factory):
+    window._handle_event(0, "retrieval", {
+        "phase": "empty", "message": "No images reached the relevance minimum.",
+        "found": 7, "downloaded": 5, "rejected": 5, "accepted": 0,
+        "threshold": 0.3, "best_score": 0.24, "failures": {},
+    })
+    assert "Best relevance 0.24; minimum 0.30" in window.image_status_label.text()
+    window.toggle_pause()
+    window._handle_event(0, "images", [image_factory()])
+    assert window.canvas.current_pixmap.isNull()
+    assert window.queue_label.text() == "Paused · 1 image ready"
+    assert "Images are paused" in window.image_status_label.text()
+    assert "Resume images or Next" in window.canvas.empty_message
+    window.next_image()
+    assert not window.canvas.current_pixmap.isNull()
+    assert window.queue_label.text() == "Paused · 0 images ready"
+
+
+def test_missing_cached_files_are_visible_without_a_preview(window, tmp_path):
+    missing = ImageCandidate("https://example.com/missing.jpg", "https://example.com/source", "missing", "wikimedia",
+                             local_path=str(tmp_path / "missing.jpg"))
+    window._handle_event(0, "images", [missing])
+    window._handle_event(0, "status", "Ready: 1 relevant images")
+    assert "image files are unavailable" in window.image_status_label.text()
+    assert window.canvas.current_pixmap.isNull()
+    assert not window.save_button.isEnabled()
+
+
+def test_canvas_reports_success_or_failure(app, image_factory, tmp_path):
+    canvas = ImageCanvas()
+    assert canvas.set_image(image_factory()) is True
+    original = canvas.current_pixmap.cacheKey()
+    path = tmp_path / "bad.jpg"
+    path.write_bytes(b"bad")
+    assert canvas.set_image(ImageCandidate("https://example.com/bad.jpg", "https://example.com/source", "bad", "wikimedia",
+                                          local_path=str(path))) is False
+    assert canvas.current_pixmap.cacheKey() == original
+    assert canvas.set_image(None) is True
+    assert canvas.current_pixmap.isNull()
+    canvas.close()

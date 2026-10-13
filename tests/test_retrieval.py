@@ -1,5 +1,7 @@
 """Offline provider/API fixtures and hostile-image boundary tests."""
 import asyncio
+from datetime import datetime, timezone
+from email.utils import format_datetime
 import io
 from pathlib import Path
 import threading
@@ -416,3 +418,111 @@ async def test_generated_embedded_metadata_rejected(settings):
         with pytest.raises(DownloadError, match="Embedded metadata"):
             await downloader.download(candidate())
     assert list(downloader.directory.iterdir()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_header, expected_seconds", [
+    ("600", 600), ("999999999999999999999999", 3600), ("0", 1),
+    ("not a date or delay", 60), (None, 60),
+    (format_datetime(datetime.fromtimestamp(1_700_000_090, timezone.utc), usegmt=True), 90),
+    (format_datetime(datetime.fromtimestamp(1_699_999_900, timezone.utc), usegmt=True), 1),
+])
+async def test_rate_limit_respects_retry_after_without_requesting_different_image(settings, retry_header, expected_seconds):
+    monotonic_now = [100.0]
+    requests, resolutions = [], []
+
+    def handler(request):
+        requests.append(request)
+        if len(requests) == 1:
+            headers = {"retry-after": retry_header} if retry_header is not None else {}
+            return httpx.Response(429, headers=headers)
+        return httpx.Response(200, content=png(), headers={"content-type": "image/png"})
+
+    async def resolver(host, port):
+        resolutions.append(host)
+        return await public_dns(host, port)
+
+    async with client(handler) as http:
+        downloader = ImageDownloader(settings, client=http, resolver=resolver,
+                                     clock=lambda: monotonic_now[0], wall_clock=lambda: 1_700_000_000)
+        with pytest.raises(DownloadError) as first:
+            await downloader.download(candidate("https://images.example.org/first.png"))
+        assert first.value.reason == "Source temporarily rate-limited"
+        assert first.value.retry_after == expected_seconds
+        with pytest.raises(DownloadError) as second:
+            await downloader.download(candidate("https://images.example.org/another-query-result.png"))
+        assert second.value.reason == "Source temporarily rate-limited"
+        assert second.value.retry_after == expected_seconds
+        assert len(requests) == 1
+        assert len(resolutions) == 1  # The cooldown also skips repeated DNS work.
+        assert list(downloader.directory.iterdir()) == []
+        monotonic_now[0] += expected_seconds + 0.01
+        result = await downloader.download(candidate("https://images.example.org/after-cooldown.png"))
+        assert result.path.is_file()
+        assert len(requests) == 2
+        assert len(resolutions) == 2
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_blocks_only_rejecting_hostname(settings):
+    requested = []
+
+    def handler(request):
+        requested.append(request.url.host)
+        if request.url.host == "upload.wikimedia.org":
+            return httpx.Response(429, headers={"retry-after": "600"})
+        return httpx.Response(200, content=png(), headers={"content-type": "image/png"})
+
+    async with client(handler) as http:
+        downloader = ImageDownloader(settings, client=http, resolver=public_dns)
+        with pytest.raises(DownloadError) as blocked:
+            await downloader.download(candidate("https://upload.wikimedia.org/original.png"))
+        assert blocked.value.reason == "Source temporarily rate-limited"
+        result = await downloader.download(candidate("https://thumb.wikimedia.org/1920px-image.png"))
+    assert result.path.is_file()
+    assert requested == ["upload.wikimedia.org", "thumb.wikimedia.org"]
+
+
+@pytest.mark.asyncio
+async def test_redirect_rate_limit_is_assigned_to_response_origin(settings):
+    requested = []
+
+    def handler(request):
+        requested.append(request.url.host)
+        if request.url.host == "images.example.org":
+            return httpx.Response(302, headers={"location": "https://cdn.example.org/photo.png"})
+        return httpx.Response(429, headers={"retry-after": "600"})
+
+    async with client(handler) as http:
+        downloader = ImageDownloader(settings, client=http, resolver=public_dns)
+        for name in ["first.png", "second.png"]:
+            with pytest.raises(DownloadError) as error:
+                await downloader.download(candidate("https://images.example.org/" + name))
+            assert error.value.reason == "Source temporarily rate-limited"
+    # The second entry-point request is allowed. The blocked CDN is not fetched
+    # again; a redirect does not transfer the restriction to unrelated hosts.
+    assert requested == ["images.example.org", "cdn.example.org", "images.example.org"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status, reason", [(403, "Source inaccessible"), (404, "Broken image link"),
+                                           (410, "Broken image link"), (503, "Source unavailable")])
+async def test_download_errors_have_private_query_free_categories(settings, status, reason):
+    async with client(lambda request: httpx.Response(status)) as http:
+        downloader = ImageDownloader(settings, client=http, resolver=public_dns)
+        with pytest.raises(DownloadError) as error:
+            await downloader.download(candidate("https://images.example.org/image.png?query=private-query"))
+    assert error.value.reason == reason
+    assert "private-query" not in str(error.value)
+    assert "https://" not in error.value.reason
+    assert list(downloader.directory.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_resolution_rejection_has_specific_user_visible_reason(settings):
+    settings.min_width = 500
+    async with client(lambda request: httpx.Response(200, content=png(), headers={"content-type": "image/png"})) as http:
+        downloader = ImageDownloader(settings, client=http, resolver=public_dns)
+        with pytest.raises(DownloadError) as error:
+            await downloader.download(candidate())
+    assert error.value.reason == "Image below minimum resolution"

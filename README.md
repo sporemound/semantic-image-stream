@@ -36,6 +36,8 @@ Microphone input is an alternative. To test a real recording or the included ori
 
 Device indices can change after reconnecting devices. Use **↻** to refresh. Capture interruptions retry a limited number of times and surface failures in the status area. During silence or failed searches, the current image stays visible. When a topic's prefetched queue is exhausted, the current image is retained until a new topic/search yields more imagery.
 
+Images preview as soon as a validated result meets the relevance minimum, while remaining images load. The image-status line shows **Found / Loaded / Ready / Skipped** counts and explains rate limits, resolution rejection, insufficient relevance, pause, or display errors. Transcription can continue independently while an image source is unavailable. Topic changes recheck downloaded candidates against current context instead of discarding an entire batch.
+
 ## Local relevance options
 
 The default `contextual` semantic analyzer uses compound concepts, co-mentioned entities/phrases, recent context and topic distance. It is an English heuristic baseline, not a language model. It can misunderstand negation, ambiguous subjects and fast transitions. The default metadata ranker combines query/context overlap, source weighting, quality and novelty; it is not a calibrated probability.

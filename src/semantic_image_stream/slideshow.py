@@ -63,6 +63,7 @@ class SlideshowController(QObject):
             self.timer.start()
             if self.current is None:
                 self.advance()
+        self.queue_changed.emit(len(self.pending))
 
     def advance(self, manual: bool = False) -> None:
         if self.paused and not manual:
@@ -116,19 +117,25 @@ class ImageCanvas(QWidget):
         self.transition = "crossfade"
         self.transition_seconds = 0.8
         self.interval = 9.0
+        self.empty_message = "Images will appear as speech reveals a topic.\nStart monitoring or play a recording."
         self._started = time.monotonic()
         self._tiles = list(range(96))
         self.animation_timer = QTimer(self)
         self.animation_timer.setInterval(33)
         self.animation_timer.timeout.connect(self._frame)
 
-    def set_image(self, candidate: ImageCandidate | None) -> None:
+    def set_empty_message(self, message: str) -> None:
+        self.empty_message = message[:1200]
+        if self.current_pixmap.isNull():
+            self.update()
+
+    def set_image(self, candidate: ImageCandidate | None) -> bool:
         if candidate is None:
             self.animation_timer.stop()
             self.previous_pixmap = QPixmap()
             self.current_pixmap = QPixmap()
             self.update()
-            return
+            return True
         reader = QImageReader(str(candidate.path))
         reader.setAutoTransform(True)
         size = reader.size()
@@ -137,7 +144,7 @@ class ImageCanvas(QWidget):
         image = reader.read()
         if image.isNull():
             self.load_failed.emit(f"Could not display image: {reader.errorString()}")
-            return
+            return False
         self.previous_pixmap = self.current_pixmap
         self.current_pixmap = QPixmap.fromImage(image)
         self._started = time.monotonic()
@@ -148,6 +155,7 @@ class ImageCanvas(QWidget):
             self.animation_timer.stop()
             self.previous_pixmap = QPixmap()
         self.update()
+        return True
 
     def _frame(self) -> None:
         elapsed = time.monotonic() - self._started
@@ -172,7 +180,7 @@ class ImageCanvas(QWidget):
         if self.current_pixmap.isNull():
             painter.setPen(QColor("#8697a9"))
             painter.drawText(self.rect().adjusted(30, 30, -30, -30), Qt.AlignmentFlag.AlignCenter,
-                             "Images will appear as speech reveals a topic.\nStart monitoring or play a recording.")
+                             self.empty_message)
             return
         elapsed = time.monotonic() - self._started
         progress = min(1, elapsed / max(0.001, self.transition_seconds))

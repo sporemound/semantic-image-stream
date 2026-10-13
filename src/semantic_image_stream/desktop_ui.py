@@ -29,6 +29,7 @@ QLabel#brand { font-size: 22px; font-weight: 650; color: #edf8ff; }
 QLabel#subtitle, QLabel#privacy, QLabel#queue { color: #93a6b8; }
 QLabel#topic { font-size: 16px; font-weight: 600; color: #a8d9d3; }
 QLabel#status { color: #b4c7d6; }
+QLabel#imageStatus { color: #a8d9d3; }
 QLabel#error { color: #f8b9a9; }
 QLabel#source { background: #0c131c; padding: 12px; }
 QFrame#settings { background: #17212d; border: 1px solid #273646; border-radius: 8px; }
@@ -84,6 +85,10 @@ class MainWindow(QMainWindow):
         self._fullscreen = False
         self._normal_geometry = None
         self._last_error = ""
+        self._image_error = ""
+        self._retrieval_message = "Images: waiting for a topic."
+        self._retrieval_seen = False
+        self._displayed_candidate: ImageCandidate | None = None
         self.current_topic = ""
         self.setWindowTitle("Semantic Image Stream")
         self.resize(1360, 900)
@@ -96,8 +101,8 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self.slideshow.current_changed.connect(self._show_image)
         self.slideshow.history_changed.connect(self._show_history)
-        self.slideshow.queue_changed.connect(lambda count: self.queue_label.setText(f"{count} images ready"))
-        self.canvas.load_failed.connect(self._error)
+        self.slideshow.queue_changed.connect(self._update_queue_label)
+        self.canvas.load_failed.connect(self._image_failed)
         self._apply_presentation()
         self._load_devices()
         for key, handler in (("F11", self.toggle_fullscreen), ("Escape", self.leave_fullscreen),
@@ -322,6 +327,12 @@ class MainWindow(QMainWindow):
         self.body.addWidget(self.sidebar)
         self.body.setStretchFactor(0, 1)
         self.body.setSizes([950, 365])
+        self.image_status_label = QLabel(self._retrieval_message)
+        self.image_status_label.setObjectName("imageStatus")
+        self.image_status_label.setWordWrap(True)
+        self.image_status_label.setMaximumHeight(72)
+        self.image_status_label.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.image_status_label)
         self.status_label = QLabel("Ready · choose an input and start monitoring")
         self.status_label.setObjectName("status")
         self.status_label.setWordWrap(True)
@@ -428,6 +439,9 @@ class MainWindow(QMainWindow):
             self.pipeline = Pipeline(deepcopy(self.settings), callback)
             self._monitoring = True
             self._last_error = ""
+            self._retrieval_message = "Images: waiting for spoken context."
+            self._retrieval_seen = False
+            self._refresh_image_status()
             self._update_controls()
             self.status_label.setObjectName("status")
             self.status_label.setText("Starting local speech recognition…")
@@ -492,7 +506,58 @@ class MainWindow(QMainWindow):
                 while self.topic_history.count() > 30:
                     self.topic_history.takeItem(self.topic_history.count() - 1)
         elif kind == "images":
+            missing = sum(not candidate.path.is_file() for candidate in payload)
+            if not self._retrieval_seen:
+                self._retrieval_message = f"{len(payload)} relevant images available."
             self.slideshow.set_queue(payload, self.current_topic)
+            # A rejected first file must not delay a later usable image by an
+            # entire slideshow interval, including in progressive batches.
+            while self.canvas.current_pixmap.isNull() and self.slideshow.pending and not self.slideshow.paused:
+                self.slideshow.advance(manual=True)
+            if payload and missing == len(payload):
+                self._image_failed("The retrieved image files are unavailable. Waiting for the next search.")
+        elif kind == "retrieval":
+            self._retrieval_seen = True
+            self._retrieval_message = self._format_retrieval(payload)
+            self._refresh_image_status()
+
+    @staticmethod
+    def _format_retrieval(payload: dict) -> str:
+        message = str(payload.get("message") or "Looking for relevant images.").strip()
+        counts = []
+        for key, label in (("found", "Found"), ("downloaded", "Loaded"), ("accepted", "Ready"), ("rejected", "Skipped")):
+            if key in payload:
+                counts.append(f"{label} {payload[key]}")
+        detail = " · ".join(counts)
+        failures = payload.get("failures") or {}
+        reasons = "; ".join(f"{reason}: {count}" for reason, count in list(failures.items())[:3])
+        if payload.get("accepted") == 0 and payload.get("best_score") is not None and payload.get("threshold") is not None:
+            reasons = (reasons + "; " if reasons else "") + (
+                f"Best relevance {payload['best_score']:.2f}; minimum {payload['threshold']:.2f}"
+            )
+        return "\n".join(part for part in (message, detail, reasons) if part)[:1200]
+
+    def _refresh_image_status(self) -> None:
+        message = self._image_error or self._retrieval_message
+        if self.slideshow.paused:
+            instruction = "Images are paused. Select Resume images or Next to show an image."
+            message = f"{message}\n{instruction}"
+        self.image_status_label.setText(message)
+        self.image_status_label.setToolTip(message)
+        self.canvas.set_empty_message(message)
+        self.image_status_label.setObjectName("error" if self._image_error else "imageStatus")
+        self.image_status_label.style().unpolish(self.image_status_label)
+        self.image_status_label.style().polish(self.image_status_label)
+
+    def _update_queue_label(self, count: int) -> None:
+        prefix = "Paused · " if self.slideshow.paused else ""
+        noun = "image" if count == 1 else "images"
+        self.queue_label.setText(f"{prefix}{count} {noun} ready")
+        self._refresh_image_status()
+
+    def _image_failed(self, message: str) -> None:
+        self._image_error = message
+        self._refresh_image_status()
 
     def _error(self, message: str) -> None:
         self._last_error = message
@@ -502,11 +567,21 @@ class MainWindow(QMainWindow):
         self.status_label.style().polish(self.status_label)
 
     def _show_image(self, candidate: ImageCandidate | None) -> None:
-        self.canvas.set_image(candidate)
-        self.save_button.setEnabled(candidate is not None)
+        displayed = self.canvas.set_image(candidate)
         if candidate is None:
+            self._displayed_candidate = None
+            self._image_error = ""
+            self.save_button.setEnabled(False)
             self.source_label.setText("Source attribution appears with each image.")
+            self._refresh_image_status()
             return
+        if not displayed:
+            self.save_button.setEnabled(False)
+            return
+        self._displayed_candidate = candidate
+        self._image_error = ""
+        self.save_button.setEnabled(True)
+        self._refresh_image_status()
         if self.pipeline is not None:
             try:
                 self.pipeline.record_displayed(candidate)
@@ -546,8 +621,8 @@ class MainWindow(QMainWindow):
         self.slideshow.advance(manual=True)
 
     def save_current(self) -> None:
-        candidate = self.slideshow.current
-        if candidate is None:
+        candidate = self._displayed_candidate
+        if candidate is None or not self.save_button.isEnabled():
             return
         suffix = candidate.path.suffix or ".jpg"
         destination, _ = QFileDialog.getSaveFileName(self, "Save image with attribution JSON", f"image{suffix}", "Images (*.*)")

@@ -1,5 +1,5 @@
 """Independent, bounded capture/transcription/semantic/search clocks."""
-from collections import deque
+from collections import Counter, deque
 from dataclasses import replace
 from pathlib import Path
 import asyncio
@@ -84,6 +84,7 @@ class Pipeline:
         self._history_lock = threading.Lock()
         self._generation = 0
         self._last_search = 0.0
+        self._latest_topic = None
 
     @property
     def running(self):
@@ -219,6 +220,7 @@ class Pipeline:
                 last_end = window[-1].end
                 topic = await _background(analyzer.analyze, window)
                 if topic and gate.changed(topic):
+                    self._latest_topic = topic
                     self._generation += 1
                     gate.accept(topic)
                     self.emit("topic", topic)
@@ -252,18 +254,47 @@ class Pipeline:
                         candidates.extend(result)
                 if candidates:
                     cache.put_query(key, candidates)
-            if generation != self._generation:
-                continue
             by_url = {}
             for candidate in candidates:
                 by_url.setdefault(candidate.image_url, candidate)
             unique = list(by_url.values())
+            # Rank metadata before prefetch to start with promising source
+            # images; retain other candidates for actual multimodal ranking.
+            if ranker.name == "metadata":
+                preferred = ranker.rank(self._latest_topic or topic, unique, [])
+                preferred_urls = {c.image_url for c in preferred}
+                unique = preferred + [c for c in unique if c.image_url not in preferred_urls]
             semaphore = asyncio.Semaphore(3)
+            downloaded = 0
+            failures = Counter()
+            published = set()
+            last_selection = ()
+
+            def report(phase, accepted=0, best_score=None):
+                if phase == "ready":
+                    message = f"{accepted} relevant images ready · {downloaded} downloaded from {len(unique)} results"
+                elif phase == "empty":
+                    if not unique:
+                        message = "No images found for this topic. Waiting for the next subject or retry."
+                    elif not downloaded:
+                        details = "; ".join(f"{count} {reason.lower()}" for reason, count in failures.items())
+                        message = f"Found {len(unique)} results, but no images could be downloaded. {details}"
+                    elif best_score is not None and best_score < self.settings.relevance_threshold:
+                        message = (f"Downloaded {downloaded} images. Best relevance {best_score:.2f} is below "
+                                   f"the {self.settings.relevance_threshold:.2f} minimum.")
+                    else:
+                        message = f"Downloaded {downloaded} images, but none are new matches for the current discussion."
+                else:
+                    message = f"Checking images · {downloaded} downloaded from {len(unique)} results"
+                self.emit("retrieval", {"phase": phase, "found": len(unique), "downloaded": downloaded,
+                                        "rejected": sum(failures.values()), "accepted": accepted,
+                                        "threshold": self.settings.relevance_threshold,
+                                        "best_score": best_score, "failures": dict(failures), "message": message})
+
+            report("downloading")
 
             async def prepare(candidate):
                 async with semaphore:
-                    if generation != self._generation:
-                        return None
                     cached = cache.get_image(candidate.image_url)
                     if cached:
                         # Reapply current geometry filters to cached images.
@@ -272,37 +303,73 @@ class Pipeline:
                                 and cached.width * cached.height <= self.settings.max_image_pixels
                                 and cached.path.stat().st_size <= self.settings.max_download_bytes
                                 and self.settings.min_aspect_ratio <= ratio <= self.settings.max_aspect_ratio):
-                            return cached
+                            return cached, None
                     try:
                         image = await downloader.download(candidate)
                         cache.put_image(image)
-                        return image
+                        return image, None
                     except Exception as exc:
                         log.debug("Rejected image (%s)", type(exc).__name__)
-                        return None
+                        return None, getattr(exc, "reason", "Download or validation failed")
 
-            prepared = [c for c in await asyncio.gather(*(prepare(c) for c in unique)) if c is not None]
-            with self._history_lock:
-                recent = list(self._recent_hashes)
-            ranked = await _background(ranker.rank, topic, prepared, recent)
-            if generation != self._generation:
-                continue
-            chosen, hashes = [], list(recent)
-            for image in ranked:
-                if image.score >= self.settings.relevance_threshold and not is_duplicate(image.phash, hashes):
-                    chosen.append(image)
-                    hashes.append(image.phash)
-                    if len(chosen) >= self.settings.prefetch_count:
+            prepared = []
+            best_score = None
+            tasks = [asyncio.create_task(prepare(c)) for c in unique]
+            try:
+                # Publish useful validated images as they arrive. Waiting for
+                # every slow/broken URL made an otherwise working preview blank.
+                for completed in asyncio.as_completed(tasks):
+                    image, reason = await completed
+                    if image is None:
+                        failures[reason] += 1
+                        report("downloading", len(published), best_score)
+                        continue
+                    downloaded += 1
+                    prepared.append(image)
+                    with self._history_lock:
+                        recent = list(self._recent_hashes)
+                    # Topic changes should not discard an entire useful batch:
+                    # re-evaluate it against the CURRENT context before display.
+                    # Repeat if context changes while a local model is ranking.
+                    while True:
+                        current = self._latest_topic or topic
+                        ranked = await _background(ranker.rank, current, prepared, recent)
+                        if current is (self._latest_topic or topic):
+                            break
+                    best_score = max((c.score for c in ranked), default=None)
+                    chosen, hashes = [], list(recent)
+                    for candidate in ranked:
+                        if (candidate.score >= self.settings.relevance_threshold
+                                and not is_duplicate(candidate.phash, hashes)):
+                            chosen.append(candidate)
+                            hashes.append(candidate.phash)
+                            if len(chosen) >= self.settings.prefetch_count:
+                                break
+                    selection = (current.query, *(c.image_url for c in chosen))
+                    if chosen and selection != last_selection:
+                        last_selection = selection
+                        self._protected_paths.extend(c.local_path for c in chosen)
+                        published.update(c.image_url for c in chosen)
+                        self.emit("images", chosen)
+                        self.emit("status", f"Ready: {len(chosen)} relevant images · {ranker.name} ranking")
+                    report("ready" if published else "downloading", len(published), best_score)
+                    if len(published) >= self.settings.prefetch_count:
                         break
-            if chosen:
-                self._protected_paths.extend(c.local_path for c in chosen)
-                self.emit("images", chosen)
-                self.emit("status", f"Ready: {len(chosen)} relevant images · {ranker.name} ranking")
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            if published:
+                report("ready", len(published), best_score)
             else:
-                self.emit("status", "No new images met the relevance and quality filters. Keeping the current slide.")
-                # Bounded retries allow temporary failures without getting stuck
-                # indefinitely on an accepted topic. New topics take precedence.
-                await asyncio.sleep(max(30, self.settings.search_interval))
+                report("empty", best_score=best_score)
+                self.emit("status", "No new images met the relevance and quality filters. See image status for details.")
+                # New speech topics wake retry immediately rather than waiting
+                # behind the old topic's fixed thirty-second failure delay.
+                end = time.monotonic() + max(30, self.settings.search_interval)
+                while self.topic_queue.empty() and time.monotonic() < end and not self.stop_event.is_set():
+                    await asyncio.sleep(0.1)
                 if generation == self._generation and self.topic_queue.empty():
                     self.topic_queue.put_nowait((generation, topic))
             cache.prune(set(self._protected_paths))
