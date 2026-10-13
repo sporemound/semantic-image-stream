@@ -417,6 +417,8 @@ class LocalNarrativeAnalyzer:
         self._state = {"summary": "", "current_scene": "", "visual_subjects": [],
                        "search_queries": [], "kind": "general", "evidence": []}
         self._batch_chars = MAX_BATCH_CHARS
+        self._batch_successes = 0
+        self._last_prompt_tokens = 0
         self._service_verified = False
         self._manifest_digest = None
         self.summary_method = "local model"
@@ -437,6 +439,11 @@ class LocalNarrativeAnalyzer:
     def context_used_segments(self):
         return self._cursor
 
+    @property
+    def has_pending_segments(self):
+        with self._lock:
+            return bool(self._offset or self._cursor < len(self._history_snapshot))
+
     @staticmethod
     def _empty_state():
         return {"summary": "", "current_scene": "", "visual_subjects": [],
@@ -449,6 +456,7 @@ class LocalNarrativeAnalyzer:
         self._visual_update = "replace"
         self.summary_method = "local model"
         self._checkpoint_valid = True
+        self._batch_successes = 0
 
     def _checkpoint_context_key(self):
         meaning = ["ollama", self.settings.context_model, self.settings.book_context]
@@ -781,9 +789,12 @@ class LocalNarrativeAnalyzer:
                 # schema needs more than the initial generation budget.
                 if prompt_tokens >= min(3500, 4096 - self._output_tokens - 96):
                     self._batch_chars = max(256, self._batch_chars // 2)
+                    self._batch_successes = 0
                     raise NarrativeContextError("The story passage exceeded model capacity; retrying in smaller passages.")
                 try:
-                    return json.loads("".join(output))
+                    result = json.loads("".join(output))
+                    self._last_prompt_tokens = prompt_tokens
+                    return result
                 except json.JSONDecodeError:
                     if done_reason == "length":
                         self._output_tokens = min(MAX_OUTPUT_TOKENS, self._output_tokens * 2)
@@ -840,6 +851,19 @@ class LocalNarrativeAnalyzer:
         if offset and cursor < len(transcript):
             parts.append(transcript[cursor][:offset])
         return " ".join(parts)
+
+    def _accepted_batch_size(self, size):
+        """Recover throughput only after repeated measured prompt headroom."""
+        limit = min(3500, 4096 - self._output_tokens - 96)
+        if (self._batch_chars >= MAX_BATCH_CHARS or size < self._batch_chars * .75
+                or not 0 < self._last_prompt_tokens <= limit * .75):
+            self._batch_successes = 0
+            return
+        self._batch_successes += 1
+        if self._batch_successes >= 4:
+            growth = min(512, max(1, self._batch_chars // 4))
+            self._batch_chars = min(MAX_BATCH_CHARS, self._batch_chars + growth)
+            self._batch_successes = 0
 
     def _validate(self, data, available, new_text):
         required = set(RESPONSE_SCHEMA["required"])
@@ -1017,7 +1041,13 @@ class LocalNarrativeAnalyzer:
             state["visual_subjects"] = []
         return state, "replace" if state["search_queries"] else "clear"
 
-    def analyze(self, segments: Sequence[TranscriptSegment], stop_event=None) -> Topic | None:
+    def analyze_incremental(self, segments: Sequence[TranscriptSegment], stop_event=None) -> Topic | None:
+        """Publish one accepted batch while retaining the complete pending story."""
+        return self.analyze(segments, stop_event, max_batches=1)
+
+    def analyze(self, segments: Sequence[TranscriptSegment], stop_event=None, *, max_batches=None) -> Topic | None:
+        if max_batches is not None and (type(max_batches) is not int or max_batches < 1):
+            raise ValueError("max_batches must be a positive integer or None")
         active_stop = stop_event if stop_event is not None else self.stop_event
         _check_stop(active_stop)
         while not self._lock.acquire(timeout=0.1):
@@ -1037,7 +1067,9 @@ class LocalNarrativeAnalyzer:
             if not self._checkpoint_valid and self._cursor == len(transcript) and not self._offset:
                 raise NarrativeContextError(
                     "The updated visual brief is waiting for the next recorded passage before accepting story details.")
+            self._history_snapshot = transcript
             update_mode = None
+            batches = 0
             if self._cursor < len(transcript):
                 self._ensure_service(active_stop, status)
             while self._cursor < len(transcript):
@@ -1065,12 +1097,18 @@ class LocalNarrativeAnalyzer:
                         update_mode = batch_update
                     self._state = state
                     self._checkpoint_valid = True
+                    self._accepted_batch_size(len(new_text))
                     if self.summary_method != "local model":
                         status("Story visuals checked against model-selected recorded evidence.")
                 self._cursor, self._offset = cursor, offset
-                self._history_snapshot = transcript
+                batches += 1
+                if max_batches is not None and batches >= max_batches:
+                    break
             self._visual_update = update_mode or "replace"
-            status(f"Story context ready · all {self._cursor} transcript segments understood locally")
+            if self.has_pending_segments:
+                status(f"Story context updated · {self._cursor}/{len(transcript)} transcript segments understood; continuing locally")
+            else:
+                status(f"Story context ready · all {self._cursor} transcript segments understood locally")
             if not self._state["search_queries"]:
                 status("Waiting for enough story context to identify a grounded visual subject.")
             queries = tuple(self._state["search_queries"])
@@ -1080,5 +1118,8 @@ class LocalNarrativeAnalyzer:
                          visual_subjects=tuple(self._state["visual_subjects"]), queries=queries,
                          transcript=transcript, context_used_segments=self._cursor,
                          visual_update=self._visual_update)
+        except Exception:
+            self._batch_successes = 0
+            raise
         finally:
             self._lock.release()

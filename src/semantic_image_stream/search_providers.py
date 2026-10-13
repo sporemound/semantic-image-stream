@@ -9,6 +9,8 @@ import asyncio
 import json
 import logging
 import re
+import subprocess
+import sys
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import PurePosixPath
@@ -23,7 +25,7 @@ from .models import ImageCandidate
 from .temporal_filter import creation_evidence, extract_depicted_evidence
 
 log = logging.getLogger(__name__)
-USER_AGENT = "SemanticImageStream/0.2.4 (https://github.com/sporemound/semantic-image-stream; https://github.com/sporemound)"
+USER_AGENT = "SemanticImageStream/0.2.5 (https://github.com/sporemound/semantic-image-stream; https://github.com/sporemound)"
 UNKNOWN_LICENSE = "Unknown — check source before reuse"
 MAX_METADATA_BYTES = 2_000_000
 _GENERATED = re.compile(
@@ -348,17 +350,30 @@ class InternetArchiveProvider(_HTTPProvider):
         # A failed item does not discard other results, and no more than ten
         # metadata requests or three concurrent requests are made per search.
         semaphore = asyncio.Semaphore(3)
+        metadata_errors = []
+        successful_items = 0
 
         async def fetch(identifier: str) -> list[ImageCandidate]:
+            nonlocal successful_items
             async with semaphore:
                 try:
                     metadata = await self._json(f"https://archive.org/metadata/{quote(identifier, safe='')}")
-                    return self._parse_item(identifier, metadata)
-                except (httpx.HTTPError, ProviderError, ValueError, TypeError):
+                    candidates = self._parse_item(identifier, metadata)
+                    successful_items += 1
+                    return candidates
+                except (httpx.HTTPError, ProviderError, ValueError, TypeError) as error:
+                    metadata_errors.append(error)
                     log.debug("Internet Archive item metadata unavailable")
                     return []
 
         batches = await asyncio.gather(*(fetch(identifier) for identifier in identifiers))
+        if identifiers and not successful_items:
+            # A failed source is not a successful empty search. Preserve a
+            # rate-limit response so the caller can honor its Retry-After.
+            cause = next((error for error in metadata_errors
+                          if getattr(getattr(error, "response", None), "status_code", None) == 429),
+                         metadata_errors[0])
+            raise ProviderError("archive item metadata unavailable") from cause
         return [candidate for batch in batches for candidate in batch][:limit]
 
     def _parse_item(self, identifier: str, data: dict) -> list[ImageCandidate]:
@@ -436,6 +451,7 @@ class DuckDuckGoProvider:
         self.settings = settings
         self._factory = ddgs_factory
         self._inflight = False
+        self._worker_process = None
 
     async def search(self, query: str, limit: int = 10) -> list[ImageCandidate]:
         return await self.search_page(query, limit, 0)
@@ -451,13 +467,85 @@ class DuckDuckGoProvider:
         requested = min(200, (page + 1) * limit)
         if self._inflight:
             raise ProviderError("duckduckgo previous request is still finishing")
-        if self._factory is None:
+        rows = (await self._isolated_search(query, requested) if self._factory is None
+                else await self._thread_search(query, requested))
+        candidates = []
+        page_rows = rows[offset:offset + limit] if isinstance(rows, list) else []
+        for row in _rows(page_rows):
+            title = plain_text(row.get("title"), "Untitled image", 300)
+            generated = _generated_status(row, title, row.get("source"), row.get("description"))
+            if generated is True and getattr(self.settings, "exclude_ai_generated", True):
+                continue
+            image_url, source_url = _https_url(row.get("image")), _source_url(row.get("url"))
+            if not image_url or not source_url:
+                continue
+            candidates.append(ImageCandidate(
+                image_url=image_url, source_url=source_url, title=title, provider=self.name,
+                width=_dimension(row.get("width")), height=_dimension(row.get("height")),
+                ai_generated=generated,
+                temporal_evidence=extract_depicted_evidence(title, plain_text(row.get("description")),
+                                                            source="DuckDuckGo source subject metadata"),
+            ))
+        return candidates
+
+    async def _isolated_search(self, query: str, requested: int) -> list[dict]:
+        from .ddgs_worker import MAX_INPUT_BYTES, MAX_OUTPUT_BYTES
+
+        request = json.dumps({"query": query, "limit": requested,
+                              "timeout": self.settings.download_timeout}).encode("utf-8")
+        if len(request) > MAX_INPUT_BYTES:
+            raise ProviderError("duckduckgo worker request exceeded the supported bound")
+        self._inflight = True
+        process = None
+        try:
+            async with asyncio.timeout(self.settings.download_timeout):
+                options = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+                process = await asyncio.create_subprocess_exec(
+                    *_duckduckgo_worker_command(), stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, **options)
+                self._worker_process = process
+                process.stdin.write(request)
+                await process.stdin.drain()
+                process.stdin.close()
+                data = bytearray()
+                while chunk := await process.stdout.read(min(65_536, MAX_OUTPUT_BYTES + 1 - len(data))):
+                    data.extend(chunk)
+                    if len(data) > MAX_OUTPUT_BYTES:
+                        raise ProviderError("duckduckgo worker returned excessive metadata")
+                await process.wait()
+                if process.returncode != 0:
+                    raise ProviderError("duckduckgo worker exited unexpectedly")
+                value = json.loads(data)
+                if not isinstance(value, dict) or type(value.get("ok")) is not bool:
+                    raise ProviderError("duckduckgo worker returned invalid metadata")
+                if not value["ok"]:
+                    error = value.get("error", "")
+                    if not isinstance(error, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,79}", error):
+                        raise ProviderError("duckduckgo worker returned invalid metadata")
+                    if error in {"ImportError", "ModuleNotFoundError"}:
+                        raise ProviderError("duckduckgo needs the optional 'search' dependency")
+                    raise ProviderError(f"duckduckgo search failed ({error})")
+                rows = value.get("rows")
+                if not isinstance(rows, list) or len(rows) > 200 or any(not isinstance(row, dict) for row in rows):
+                    raise ProviderError("duckduckgo worker returned invalid metadata")
+                return rows
+        except ProviderError:
+            raise
+        except (OSError, ValueError, TimeoutError) as error:
+            raise ProviderError(f"duckduckgo search failed ({type(error).__name__})") from error
+        finally:
+            # The next request may start only after the old native worker has
+            # been terminated and reaped, including on timeout/cancellation.
             try:
-                self._factory = _duckduckgo_client_factory()
-            except ImportError as error:
-                raise ProviderError("duckduckgo needs the optional 'search' dependency") from error
+                if process is not None:
+                    await _reap_duckduckgo_worker(process)
+            finally:
+                self._worker_process = None
+                self._inflight = False
+
+    async def _thread_search(self, query: str, requested: int):
         # A synchronous library cannot be forcibly cancelled. Prevent repeated
-        # timeout searches from accumulating workers; library timeout also bounds I/O.
+        # timeout searches from accumulating injected test/client workers.
         self._inflight = True
 
         loop = asyncio.get_running_loop()
@@ -493,27 +581,37 @@ class DuckDuckGoProvider:
             rows = await asyncio.wait_for(future, self.settings.download_timeout)
         except Exception as error:
             raise ProviderError(f"duckduckgo search failed ({type(error).__name__})") from error
-        candidates = []
-        page_rows = rows[offset:offset + limit] if isinstance(rows, list) else []
-        for row in _rows(page_rows):
-            title = plain_text(row.get("title"), "Untitled image", 300)
-            generated = _generated_status(row, title, row.get("source"), row.get("description"))
-            if generated is True and getattr(self.settings, "exclude_ai_generated", True):
-                continue
-            image_url, source_url = _https_url(row.get("image")), _source_url(row.get("url"))
-            if not image_url or not source_url:
-                continue
-            candidates.append(ImageCandidate(
-                image_url=image_url, source_url=source_url, title=title, provider=self.name,
-                width=_dimension(row.get("width")), height=_dimension(row.get("height")),
-                ai_generated=generated,
-                temporal_evidence=extract_depicted_evidence(title, plain_text(row.get("description")),
-                                                            source="DuckDuckGo source subject metadata"),
-            ))
-        return candidates
+        return rows
 
     async def close(self) -> None:
-        pass
+        if self._worker_process is not None:
+            await _reap_duckduckgo_worker(self._worker_process)
+
+
+def _duckduckgo_worker_command() -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--ddgs-worker"]
+    return [sys.executable, "-m", "semantic_image_stream.ddgs_worker"]
+
+
+async def _reap_duckduckgo_worker(process) -> None:
+    if process.returncode is None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+    waiter = asyncio.create_task(process.wait())
+    cancelled = False
+    while not waiter.done():
+        try:
+            await asyncio.shield(waiter)
+        except asyncio.CancelledError:
+            # Stop may arrive while timeout cleanup is already reaping. Do
+            # not abandon the child or permit another native request yet.
+            cancelled = True
+    waiter.result()
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 def _validate_page(page: int) -> None:

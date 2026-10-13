@@ -256,7 +256,17 @@ class SessionStore:
                 target.write(raw)
                 target.flush()
                 os.fsync(target.fileno())
-            os.replace(temporary, self.path)
+            for attempt in range(5):
+                try:
+                    os.replace(temporary, self.path)
+                    break
+                except PermissionError:
+                    # Windows readers/antivirus may briefly hold the old file.
+                    # Keep that complete snapshot while retrying the same
+                    # atomic replacement, with a bounded background wait.
+                    if attempt == 4:
+                        raise
+                    time.sleep(.02 * (attempt + 1))
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)

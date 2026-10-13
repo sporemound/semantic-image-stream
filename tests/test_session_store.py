@@ -112,6 +112,37 @@ def test_clear_fences_pending_old_snapshot_and_keeps_new_session(settings, monke
         store.close()
 
 
+def test_transient_windows_file_lock_retries_without_losing_prior_or_new_context(settings, monkeypatch):
+    import semantic_image_stream.session_store as module
+
+    state = story(1)
+    store = SessionStore(settings)
+    store.bind(state)
+    store.flush(state)
+    previous = store.path.read_bytes()
+    actual_replace = module.os.replace
+    attempts, waits = [], []
+
+    def briefly_locked(source, destination):
+        attempts.append((source, destination))
+        if len(attempts) <= 2:
+            assert store.path.read_bytes() == previous
+            raise PermissionError("Controlled sharing violation")
+        actual_replace(source, destination)
+
+    monkeypatch.setattr(module.os, "replace", briefly_locked)
+    monkeypatch.setattr(module.time, "sleep", waits.append)
+    try:
+        state.segments.append(TranscriptSegment(6, 12, "A new recorded fixture passage."))
+        store.flush(state)
+        assert len(attempts) == 3 and waits == [.02, .04]
+        assert len(set(attempts)) == 1, "Retry the same complete atomic snapshot"
+        assert store.load().segments == state.segments
+        assert not list(store.root.glob(".session-*.tmp"))
+    finally:
+        store.close()
+
+
 def test_failed_atomic_replace_preserves_previous_save(settings, monkeypatch):
     import semantic_image_stream.session_store as module
 

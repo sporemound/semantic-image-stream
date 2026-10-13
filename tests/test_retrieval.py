@@ -272,7 +272,7 @@ async def test_installed_ddgs_cleans_only_owned_image_request_headers(settings, 
     ordinary_headers = ordinary_client.headers
     assert any(name.casefold() == "connection" for name in ordinary_headers)
 
-    results = await DuckDuckGoProvider(settings).search("geologists anomalies", 1)
+    results = await DuckDuckGoProvider(settings, ddgs_factory=_duckduckgo_client_factory()).search("geologists anomalies", 1)
 
     assert len(results) == 1
     assert results[0].title == "Geologists investigate anomalies"

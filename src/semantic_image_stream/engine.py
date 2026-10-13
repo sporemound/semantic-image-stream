@@ -141,6 +141,7 @@ class Pipeline:
         self._query_pages = {}
         self._refresh_queries = set()
         self._fresh_query_cycles = set()
+        self._fallback_positions = {}
         self._last_query_failed = False
         self._last_query_incomplete = False
         self._last_query_all_paused = False
@@ -233,6 +234,7 @@ class Pipeline:
         self._query_pages.clear()
         self._refresh_queries.clear()
         self._fresh_query_cycles.clear()
+        self._fallback_positions.clear()
         pending = getattr(self, "topic_queue", None)
         if pending is not None:
             while not pending.empty():
@@ -386,7 +388,7 @@ class Pipeline:
         threading.Thread(target=capture, daemon=True, name="sis-capture").start()
         tasks = [asyncio.create_task(self._transcribe()),
                  asyncio.create_task(self._interpret(analyzer)),
-                 asyncio.create_task(self._search(providers, downloader, ranker, cache))]
+                 asyncio.create_task(self._supervise_image_search(providers, downloader, ranker, cache))]
         try:
             self.emit("status", "Monitoring. Audio stays local; only compact search queries go to selected providers.")
             while not self.stop_event.is_set():
@@ -447,7 +449,8 @@ class Pipeline:
                 window = list(self._segments)
             count = len(window)
             guidance_revision = self.session_state.guidance_revision
-            if (window and (count != last_count or guidance_revision != last_guidance_revision)
+            if (window and (count != last_count or guidance_revision != last_guidance_revision
+                            or getattr(analyzer, "has_pending_segments", False))
                     and (count != failed_count or time.monotonic() >= retry_at)):
                 self._emit_context("updating", "Updating local story understanding from all recorded text.")
                 topic, changed, refill = None, False, False
@@ -659,7 +662,9 @@ class Pipeline:
             if bind:
                 bind(self.stop_event, lambda message: self._emit_context("updating", message))
             if self.settings.semantic_provider == "ollama":
-                return analyzer.analyze(segments, self.stop_event)
+                incremental = getattr(analyzer, "analyze_incremental", None)
+                return (incremental(segments, self.stop_event) if callable(incremental)
+                        else analyzer.analyze(segments, self.stop_event))
             return analyzer.analyze(segments)
         finally:
             try:
@@ -764,6 +769,62 @@ class Pipeline:
                                   "book_guidance_strength": self.settings.book_guidance_strength,
                                   "guidance_revision": self.session_state.guidance_revision} if guidance_ack else {})})
 
+    async def _supervise_image_search(self, providers, downloader, ranker, cache):
+        """Recover an exited image worker without restarting speech or story data."""
+        while not self.stop_event.is_set():
+            try:
+                await self._search(providers, downloader, ranker, cache)
+            except asyncio.CancelledError:
+                if self.stop_event.is_set():
+                    raise
+                reason = "CancelledError"
+            except Exception as exc:
+                reason = type(exc).__name__
+            else:
+                if self.stop_event.is_set():
+                    return
+                reason = "UnexpectedExit"
+            if self.stop_event.is_set():
+                return
+            log.warning("Image discovery worker restarting (%s)", reason)
+            self.emit("retrieval", {"phase": "error", "accepted": len(self._approved_images),
+                                    "found": 0, "downloaded": 0, "rejected": 0,
+                                    "threshold": self.settings.relevance_threshold, "best_score": None,
+                                    "failures": {"Image discovery interrupted": 1},
+                                    "message": "Image discovery was interrupted; restarting it automatically. "
+                                               "Speech and story context are retained."})
+            # A failed worker must not spin on a topic already queued before
+            # its exit. An actual new generation may wake recovery sooner.
+            generation = self._generation
+            delay = max(30.0, self.settings.search_interval)
+            deadline = time.monotonic() + delay
+            while (not self.stop_event.is_set() and self._generation == generation
+                   and time.monotonic() < deadline):
+                await asyncio.sleep(.1)
+
+    def _next_discovery_query(self, primary, alternatives, tried):
+        # Each poll still has two fallback requests. Rotate their starting
+        # point so later grounded subjects are not starved by exhausted ones.
+        options = {}
+        for query in alternatives:
+            clean = sanitize_query(query)
+            if clean and clean.casefold() != primary.casefold():
+                options.setdefault(clean.casefold(), clean)
+        if not options:
+            return ""
+        values = tuple(options.values())
+        key = (primary.casefold(), *options)
+        start = self._fallback_positions.get(key, 0)
+        for offset in range(len(values)):
+            position = (start + offset) % len(values)
+            query = values[position]
+            if query.casefold() not in tried:
+                self._fallback_positions[key] = (position + 1) % len(values)
+                if len(self._fallback_positions) > 200:
+                    self._fallback_positions.pop(next(iter(self._fallback_positions)))
+                return query
+        return ""
+
     async def _search(self, providers, downloader, ranker, cache):
         while not self.stop_event.is_set():
             try:
@@ -795,6 +856,7 @@ class Pipeline:
             from .book_guidance import guided_queries
             guided = guided_queries(topic, self.settings)
             query = guided[0] if guided else sanitize_query(topic.query)
+            primary_query = query
             query_basis = topic
             is_fallback = False
             tried = {query.casefold()}
@@ -827,6 +889,10 @@ class Pipeline:
                 published, ranking_failed = await self._evaluate_candidates(
                     topic, candidates, query_basis if is_fallback else None,
                     query if is_fallback else None, downloader, ranker, cache, rejected_urls, attempt_failures, attempt_stats)
+                if generation != self._generation:
+                    # A slow old batch yielded to a newer scene. Return to the
+                    # current primary query instead of paging its predecessor.
+                    break
                 transient_download = any(attempt_failures[reason] > previous_failures[reason]
                     for reason in ("Source temporarily rate-limited", "Source unavailable", "Network error", "Image download timed out"))
                 # An actual healthy response exhausts this page even if a
@@ -854,11 +920,9 @@ class Pipeline:
                 alternatives = guided_queries(basis, self.settings)[1:]
                 for alternative in fallback_queries(basis):
                     alternatives.extend(guided_queries(replace(basis, query=alternative), self.settings))
-                alternatives = [sanitize_query(q) for q in alternatives]
-                alternatives = [q for q in alternatives if q and q.casefold() not in tried]
-                if not alternatives:
+                query = self._next_discovery_query(primary_query, alternatives, tried)
+                if not query:
                     break
-                query = alternatives[0]
                 query_basis = basis
                 is_fallback = True
                 tried.add(query.casefold())
@@ -1018,6 +1082,7 @@ class Pipeline:
         ranked_generation = None
         best_score = None
         ranking_failed = False
+        scene_corrections = 0
         tasks = [asyncio.create_task(prepare(c)) for c in unique]
         try:
             # Publish useful validated images as they arrive. Waiting for
@@ -1051,12 +1116,20 @@ class Pipeline:
                         ranking_failed = True
                         self._report_ranking_failure(ranker, exc, len(unique), downloaded, len(published))
                         break
+                    if self.stop_event.is_set():
+                        return False, False
                     latest = self._latest_topic or topic
                     if (generation != self.session_state.playback_generation
                             or self._scope_changed(scope, self._visual_scope(latest))):
                         # An obsolete scene cannot approve images for its
                         # successor. Summary/transcript additions within the
                         # same scene must not starve a completed slow ranking.
+                        scene_corrections += 1
+                        if scene_corrections > 1:
+                            # Repeated scene changes can otherwise rerank the
+                            # same old-query pixels forever. Release remaining
+                            # downloads and let discovery fetch the current scene.
+                            return False, False
                         continue
                     if new_scene:
                         ranked_by_url.clear()

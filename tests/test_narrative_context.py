@@ -645,6 +645,9 @@ def test_saved_session_restores_real_analyzer_through_pipeline_without_rereading
         pipeline = Pipeline(config, lambda *args: None, session_state=state)
         original = pipeline._session_analyzer()
         state.topic = pipeline._analyze_session(original, recording)
+        assert 0 < state.topic.context_used_segments < len(recording) and original.has_pending_segments
+        while original.has_pending_segments:
+            state.topic = pipeline._analyze_session(original, recording)
         original_topic = state.topic
         assert original_topic.context_used_segments == 360
         assert state.analyzer_checkpoint == original.export_checkpoint()
@@ -671,7 +674,8 @@ def test_saved_session_restores_real_analyzer_through_pipeline_without_rereading
         assert restored.topic is resumed_pipeline._latest_topic
         assert replace(restored.topic, image_guidance=None, guidance_strength=None) == original_topic
         assert restored.topic.image_guidance == config.book_context
-        assert resumed_pipeline._analyze_session(resumed, list(restored.segments)) == original_topic
+        accepted = resumed_pipeline._analyze_session(resumed, list(restored.segments))
+        assert replace(accepted, visual_update=original_topic.visual_update) == original_topic
         assert built[-1][1] == built[-1][2] == []
 
         appended = segments(361)[-1]

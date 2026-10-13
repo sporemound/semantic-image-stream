@@ -206,7 +206,7 @@ async def test_new_topic_wakes_failed_search_without_thirty_second_wait(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_empty_search_tries_only_two_distinct_alternatives_and_caches_empty_results(tmp_path, monkeypatch):
+async def test_empty_search_tries_two_alternatives_per_poll_and_caches_empty_results(tmp_path, monkeypatch):
     pipeline, cache, directory, events, _ = pipeline_fixture(tmp_path)
     topic = Topic("garbled narration phrase", "Corona satellites and Mexico City", kind="history")
     pipeline._generation = 1
@@ -218,11 +218,10 @@ async def test_empty_search_tries_only_two_distinct_alternatives_and_caches_empt
     stop_on_empty(pipeline, monkeypatch, retries=1)
     try:
         await asyncio.wait_for(pipeline._search([provider], Downloader(directory), MetadataRanker(), cache), 2)
-        assert provider.queries == [topic.query, "Corona satellite", "Mexico City"]
+        assert provider.queries == [topic.query, "Corona satellite", "Mexico City", "Unbounded third query"]
         assert all(cache.get_query(query_key(pipeline, query)) == [] for query in provider.queries)
-        assert cache.get_query(query_key(pipeline, "Unbounded third query")) is None
         attempts = [data for kind, data in events if kind == "retrieval" and data["phase"] == "searching"]
-        assert attempts
+        assert len(attempts) == 4, "Two alternatives on each of two polls; later queries must not starve"
         assert all("shorter query from the current spoken context" in data["message"] for data in attempts)
         assert all(topic.query not in data["message"] for data in attempts)
     finally:
@@ -389,12 +388,12 @@ async def test_topic_change_abandons_remaining_alternatives_from_old_context(tmp
             return await super().search(query, limit)
 
     provider = ChangingProvider({})
-    stop_on_empty(pipeline, monkeypatch)
+    stop_on_empty(pipeline, monkeypatch, retries=1)
     try:
         await asyncio.wait_for(pipeline._search([provider], Downloader(directory), MetadataRanker(), cache), 2)
-        assert provider.queries == [initial.query, "Corona satellite", "pollinating insects"]
+        assert provider.queries == [initial.query, "Corona satellite", latest.query,
+                                    "pollinating insects", "orchid flowers"]
         assert "KGB mission" not in provider.queries
-        assert "orchid flowers" not in provider.queries, "Topic changes must not reset the two-query budget"
     finally:
         cache.close()
 

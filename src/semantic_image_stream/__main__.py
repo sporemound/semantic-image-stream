@@ -8,6 +8,9 @@ from .logging_setup import configure_logging
 
 
 def main(argv=None):
+    if (sys.argv[1:] if argv is None else argv) == ["--ddgs-worker"]:
+        from .ddgs_worker import main as worker_main
+        return worker_main()
     # Small local feature arrays do not need a large OpenBLAS worker pool.
     # Set this before optional NumPy/SciPy imports; explicit user overrides stay.
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
