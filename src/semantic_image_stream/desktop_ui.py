@@ -715,6 +715,8 @@ class MainWindow(QMainWindow):
                 while self.topic_history.count() > 30:
                     self.topic_history.takeItem(self.topic_history.count() - 1)
         elif kind == "images":
+            if self._context_frozen:
+                return
             missing = sum(not candidate.path.is_file() for candidate in payload)
             if not self._retrieval_seen:
                 self._retrieval_message = f"{len(payload)} relevant images available."
@@ -727,6 +729,8 @@ class MainWindow(QMainWindow):
             if payload and missing == len(payload):
                 self._image_failed("The retrieved image files are unavailable. Waiting for the next search.")
         elif kind == "retrieval":
+            if self._context_frozen:
+                return
             self._retrieval_seen = True
             self._retrieval_message = self._format_retrieval(payload)
             self._refresh_image_status()

@@ -1,6 +1,9 @@
-"""Offscreen Qt checks use real local fixtures, never a simulated runtime stream."""
+"""Offscreen Qt checks use local fixtures and replace hardware/model/network boundaries."""
 import os
 import json
+from pathlib import Path
+import subprocess
+import sys
 import time
 from types import SimpleNamespace
 
@@ -744,6 +747,7 @@ def recording_context_pipeline(monkeypatch):
         def __init__(self, settings, callback, session_state=None):
             self.settings, self.callback, self.session_state = settings, callback, session_state
             self.deleted_history = False
+            self.displayed_images = []
             instances.append(self)
 
         def start(self):
@@ -754,6 +758,9 @@ def recording_context_pipeline(monkeypatch):
 
         def clear_history(self):
             self.deleted_history = True
+
+        def record_displayed(self, image):
+            self.displayed_images.append(image)
 
     monkeypatch.setattr(engine, "Pipeline", NoCapturePipeline)
     return instances
@@ -1007,6 +1014,62 @@ def test_stop_click_keeps_recorded_text_and_context_despite_late_empty_callbacks
     assert window.transcript.document().blockCount() == 2
 
 
+def test_stop_rejects_queued_new_scene_images_and_keeps_approved_cycling(window, recording_context_pipeline, image_factory):
+    first, second, third = image_factory(), image_factory("blue", "blue"), image_factory("green", "green")
+    QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
+    pipeline = recording_context_pipeline[-1]
+    pipeline.session_state.segments.append(TranscriptSegment(0, 5, "The satellite entered orbit."))
+    pipeline.callback("transcript", list(pipeline.session_state.segments))
+    pipeline.callback("context", {"phase": "ready", "summary": "A satellite in orbit.",
+                                  "scene": "Earth seen from orbit.", "visual_subjects": ["satellite in orbit"],
+                                  "playback_key": "scene:1"})
+    pipeline.callback("topic", Topic("satellite orbit", "Established scene"))
+    pipeline.callback("images", [first, second])
+    pipeline.callback("retrieval", {"phase": "ready", "message": "Two images match the established scene.",
+                                    "found": 2, "downloaded": 2, "accepted": 2})
+    established_status = window.image_status_label.text()
+    established_key = window._playback_key
+    established_caption = window.source_label.text()
+    QTest.mouseClick(window.stop_button, Qt.MouseButton.LeftButton)
+    pipeline.callback("context", {"phase": "ready", "summary": "A spacecraft landing.",
+                                  "scene": "Landing on the ground.", "visual_subjects": ["spacecraft landing"],
+                                  "playback_key": "scene:2"})
+    pipeline.callback("topic", Topic("spacecraft landing", "New queued scene"))
+    pipeline.callback("images", [third])
+    pipeline.callback("retrieval", {"phase": "ready", "message": "One image matches the new scene.",
+                                    "found": 1, "downloaded": 1, "accepted": 1})
+    assert window.current_topic == "satellite orbit"
+    assert window.image_status_label.text() == established_status
+    assert window._playback_key == established_key
+    assert window.source_label.text() == established_caption
+    assert window.slideshow.current is first
+    assert list(window.slideshow.pending) == [second]
+    assert window.slideshow.replay_count == 2
+    assert window.slideshow.timer.isActive()
+    window.next_image()
+    assert window.slideshow.current is second
+    window.next_image()
+    assert window.slideshow.current is first
+    assert third not in window.slideshow.history
+    assert pipeline.displayed_images == [first, second, first]
+    QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
+    resumed = recording_context_pipeline[-1]
+    assert not window._context_frozen
+    resumed.callback("context", {"phase": "ready", "scene": "Landing on the ground.",
+                                  "visual_subjects": ["spacecraft landing"], "playback_key": "scene:2"})
+    resumed.callback("topic", Topic("spacecraft landing", "Resumed scene"))
+    resumed.callback("images", [third])
+    resumed.callback("retrieval", {"phase": "ready", "message": "One image matches the resumed scene.",
+                                   "found": 1, "downloaded": 1, "accepted": 1})
+    assert window.current_topic == "spacecraft landing"
+    assert list(window.slideshow.pending) == [third]
+    assert window.slideshow.replay_count == 1
+    assert "resumed scene" in window.image_status_label.text()
+    window.next_image()
+    assert window.slideshow.current is third
+    assert resumed.displayed_images == [third]
+
+
 def test_context_update_retains_previous_interpretation_until_a_new_ready_result(window):
     window._handle_event(0, "context", {"phase": "ready", "summary": "An established story.",
                                       "scene": "A spacecraft in orbit.", "visual_subjects": ["spacecraft"],
@@ -1023,16 +1086,42 @@ def test_context_update_retains_previous_interpretation_until_a_new_ready_result
     assert "An established story." not in window.context_text.toPlainText()
 
 
-def test_real_pipeline_stop_button_and_restart_preserve_the_full_session(window, app, monkeypatch):
-    """Run actual Pipeline clocks/signals, substituting only external boundaries."""
+def test_real_pipeline_stop_button_and_restart_preserve_the_full_session(tmp_path):
+    """Give this threaded native-Qt integration its own application lifetime.
+
+    This integration aborted during garbage collection after earlier widget
+    tests on Windows/Python 3.11. A separate QApplication lifetime and explicit
+    teardown avoid mixing their native objects. Signal/reference cycles are
+    a possible cause, not a confirmed one. The real assertions still run;
+    production behavior is unchanged and failures are never retried.
+    """
+    code = ("import runpy, sys; "
+            "runpy.run_path(sys.argv[1])['_exercise_pipeline_stop_start'](sys.argv[2])")
+    result = subprocess.run([sys.executable, "-X", "faulthandler", "-c", code,
+                             str(Path(__file__).resolve()), str(tmp_path / "pipeline-cache")],
+                            capture_output=True, encoding="utf-8", errors="replace", timeout=45, check=False)
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+
+
+def _exercise_pipeline_stop_start(cache_dir):
+    """Fresh-process actual Pipeline/Qt check with external boundaries replaced."""
     import numpy as np
+    import threading
+    from PySide6.QtCore import QEvent
     from semantic_image_stream import audio_capture, engine, image_download, search_providers, transcription
     from semantic_image_stream.models import AudioChunk
 
     created = []
+    pipelines = []
+    monkeypatch = pytest.MonkeyPatch()
+    app = QApplication([])
 
     class FixtureCapture:
+        def __init__(self):
+            self.thread = None
+
         def run(self, on_chunk, on_status, stop_event):
+            self.thread = threading.current_thread()
             if len(created) == 1:
                 on_chunk(AudioChunk(np.ones(16000, dtype=np.float32), 0))
             stop_event.wait()
@@ -1079,7 +1168,10 @@ def test_real_pipeline_stop_button_and_restart_preserve_the_full_session(window,
     monkeypatch.setattr(engine, "build_analyzer", lambda *args, **kwargs: FixtureAnalyzer())
     monkeypatch.setattr(search_providers, "build_providers", lambda settings: [])
     monkeypatch.setattr(image_download, "ImageDownloader", NoImageDownloader)
-    window.semantic_interval.setValue(1)
+    monkeypatch.setattr(MainWindow, "_load_devices", lambda *args: None)
+    window = MainWindow(Settings(cache_dir=str(cache_dir), semantic_interval=1))
+    window.show()
+    app.processEvents()
 
     def until(predicate):
         deadline = time.monotonic() + 8
@@ -1088,23 +1180,45 @@ def test_real_pipeline_stop_button_and_restart_preserve_the_full_session(window,
             time.sleep(0.01)
         assert predicate(), window.status_label.text()
 
-    QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
-    until(lambda: bool(window.context_text.toPlainText()) and bool(window.transcript.toPlainText()))
-    state = window._session_state
-    assert len(state.segments) == 1 and state.topic is not None
-    transcript, context = window.transcript.toPlainText(), window.context_text.toPlainText()
-    topic = window.topic_label.text()
-    QTest.mouseClick(window.stop_button, Qt.MouseButton.LeftButton)
-    assert window.transcript.toPlainText() == transcript and window.context_text.toPlainText() == context
-    until(lambda: not window._monitoring)
-    assert window._session_state is state and state.topic is not None
-    assert window.transcript.toPlainText() == transcript and window.context_text.toPlainText() == context
-    assert window.topic_label.text() == topic
-    QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
-    assert window.transcript.toPlainText() == transcript and window.context_text.toPlainText() == context
-    assert window.topic_label.text() == topic
-    until(lambda: len(created) == 2)
-    assert window._session_state is state and len(state.segments) == 1
-    QTest.mouseClick(window.stop_button, Qt.MouseButton.LeftButton)
-    until(lambda: not window._monitoring)
-    assert window.transcript.toPlainText() == transcript and window.context_text.toPlainText() == context
+    try:
+        QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
+        pipelines.append(window.pipeline)
+        until(lambda: bool(window.context_text.toPlainText()) and bool(window.transcript.toPlainText()))
+        state = window._session_state
+        assert len(state.segments) == 1 and state.topic is not None
+        transcript, context = window.transcript.toPlainText(), window.context_text.toPlainText()
+        topic = window.topic_label.text()
+        QTest.mouseClick(window.stop_button, Qt.MouseButton.LeftButton)
+        assert window.transcript.toPlainText() == transcript and window.context_text.toPlainText() == context
+        until(lambda: not window._monitoring)
+        assert window._session_state is state and state.topic is not None
+        assert window.transcript.toPlainText() == transcript and window.context_text.toPlainText() == context
+        assert window.topic_label.text() == topic
+        QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
+        pipelines.append(window.pipeline)
+        assert window.transcript.toPlainText() == transcript and window.context_text.toPlainText() == context
+        assert window.topic_label.text() == topic
+        until(lambda: len(created) == 2)
+        assert window._session_state is state and len(state.segments) == 1
+        QTest.mouseClick(window.stop_button, Qt.MouseButton.LeftButton)
+        until(lambda: not window._monitoring)
+        assert window.transcript.toPlainText() == transcript and window.context_text.toPlainText() == context
+    finally:
+        # Release native widgets on their GUI thread after Pipeline/capture
+        # workers finish, including when an assertion fails. Keep references
+        # alive until then rather than leaving cleanup to cyclic collection.
+        window.close()
+        for pipeline in pipelines:
+            if pipeline is not None:
+                pipeline.stop()
+                if pipeline._thread is not None:
+                    pipeline._thread.join(timeout=3)
+                    assert not pipeline._thread.is_alive(), "Pipeline remained alive during Qt teardown"
+        for capture in created:
+            if capture.thread is not None:
+                capture.thread.join(timeout=3)
+                assert not capture.thread.is_alive(), "Capture remained alive during Qt teardown"
+        window.deleteLater()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+        monkeypatch.undo()
