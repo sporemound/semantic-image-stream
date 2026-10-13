@@ -157,6 +157,68 @@ async def test_malformed_or_oversized_worker_protocol_is_rejected_and_reaped(tmp
 
 
 @pytest.mark.asyncio
+async def test_excess_worker_output_drains_paused_pipe_and_next_request_recovers(tmp_path, monkeypatch):
+    payload = json.dumps({"ok": True, "rows": [{
+        "title": "Coastal cave", "image": "https://photos.example.org/cave.jpg",
+        "url": "https://museum.example.org/cave", "width": 800, "height": 600,
+    }]}).encode()
+    script = tmp_path / "noisy_worker.py"
+    script.write_text(
+        "import json, sys\n"
+        "request = json.loads(sys.stdin.buffer.read())\n"
+        "if request['query'] == 'noisy':\n"
+        "    sys.stdout.buffer.write(b'x' * 10_000_000)\n"
+        "else:\n"
+        "    sys.stdout.buffer.write(" + repr(payload) + ")\n"
+        "sys.stdout.buffer.flush()\n", encoding="utf-8")
+    monkeypatch.setattr(search_providers, "_duckduckgo_worker_command", lambda: [sys.executable, str(script)])
+    provider = DuckDuckGoProvider(Settings(cache_dir=str(tmp_path), download_timeout=5))
+    original_reap = search_providers._reap_duckduckgo_worker
+    paused = asyncio.Event()
+    processes = []
+
+    async def reap_after_pipe_pauses(process, **kwargs):
+        if not processes:
+            processes.append(process)
+            # Deliberately yield at the cleanup boundary until the controlled
+            # excess output fills asyncio's reader. Merely bound+1 bytes would
+            # leave no unread remainder and miss the wait-after-kill deadlock.
+            for _ in range(200):
+                if process.stdout._paused:
+                    break
+                await asyncio.sleep(.01)
+            assert process.stdout._paused, "Controlled excess output must pause its pipe"
+            paused.set()
+        return await original_reap(process, **kwargs)
+
+    monkeypatch.setattr(search_providers, "_reap_duckduckgo_worker", reap_after_pipe_pauses)
+    task = asyncio.create_task(provider.search("noisy", 1))
+    try:
+        await asyncio.wait_for(paused.wait(), 3)
+        # wait_for would cancel a cleanup intentionally shielded from Stop.
+        # Observe its deadline without cancelling the request under review.
+        done, _ = await asyncio.wait([task], timeout=2)
+        assert task in done, "Killed worker cleanup must drain unread stdout before waiting for exit"
+        with pytest.raises(ProviderError, match="excessive metadata"):
+            task.result()
+        assert processes[0].returncode is not None and processes[0].stdout.at_eof()
+        assert provider._worker_process is None and not provider._inflight
+        images = await provider.search("coastal cave", 1)
+        assert len(images) == 1 and images[0].title == "Coastal cave"
+        assert provider._worker_process is None and not provider._inflight
+    finally:
+        # A failure against the old helper must still release its paused pipe
+        # and finish the request, leaving neither a child nor a pending task.
+        if not task.done():
+            process = provider._worker_process
+            if process is not None:
+                if process.returncode is None:
+                    process.kill()
+                await process.stdout.read()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_worker_bounds_native_metadata_and_keeps_explicit_ai_flag(tmp_path, monkeypatch):
     worker_fixture(tmp_path, monkeypatch, """
         return [{'title': '<b>Coastal cave</b>', 'image': 'https://photos.example.org/cave.jpg',

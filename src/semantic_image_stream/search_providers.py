@@ -585,7 +585,9 @@ class DuckDuckGoProvider:
 
     async def close(self) -> None:
         if self._worker_process is not None:
-            await _reap_duckduckgo_worker(self._worker_process)
+            # The active request still owns its stdout reader. Its finally
+            # block drains the pipe after that reader exits.
+            await _reap_duckduckgo_worker(self._worker_process, drain_stdout=False)
 
 
 def _duckduckgo_worker_command() -> list[str]:
@@ -594,13 +596,23 @@ def _duckduckgo_worker_command() -> list[str]:
     return [sys.executable, "-m", "semantic_image_stream.ddgs_worker"]
 
 
-async def _reap_duckduckgo_worker(process) -> None:
+async def _reap_duckduckgo_worker(process, *, drain_stdout=True) -> None:
     if process.returncode is None:
         try:
             process.kill()
         except ProcessLookupError:
             pass
-    waiter = asyncio.create_task(process.wait())
+
+    async def finish():
+        # Killing a process does not empty its stdout pipe. A paused asyncio
+        # reader can otherwise prevent wait() from finishing after exit.
+        # Discard in bounded chunks without accepting more protocol metadata.
+        if drain_stdout and process.stdout is not None:
+            while await process.stdout.read(65_536):
+                pass
+        await process.wait()
+
+    waiter = asyncio.create_task(finish())
     cancelled = False
     while not waiter.done():
         try:

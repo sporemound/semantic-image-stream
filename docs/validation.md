@@ -114,6 +114,12 @@ A combined real-store/engine/analyzer test saves and reloads 360 passages, prese
 
 Concurrent boundary checks prove late workers cannot recreate a deleted book, Stop cannot accept raw/topic updates after a final save wins the session lock, an obsolete write failure cannot fail a newer final flush, and failed atomic replacement preserves the previous complete file. Corrupt records remain untouched until an explicit clear; invalid derived metadata does not delete intact raw text. Nonfinite and out-of-range timestamps are rejected as damaged data without leaking an overflow exception into startup. All GUI/test stores use isolated temporary folders; no real user story, model or provider request was used. All 380 local regression checks and lint passed for this feature.
 
+## Long-running search recovery retry
+
+The recovery update supervises image discovery, rotates bounded grounded fallback queries, yields obsolete ranking batches after scene changes and publishes accepted narrative batches while a backlog remains. Offline regressions cover six simulated hours without unseen source results, preserved story and viewing history, incremental cursor/checkpoint recovery, Archive metadata failures and termination of stuck DuckDuckGo child processes. A fresh Linux/Python 3.12 run of that update passed 947 tests with two platform/dependency-specific skips, lint and source/wheel builds; the existing Windows/Python 3.11 and 3.13 CI jobs also passed. This is not a real six-hour livestream soak or a validation of recovery from a native CLIP hang.
+
+Review reproduced a cleanup deadlock when an abnormal child emitted much more than the two-million-byte protocol limit: the parent rejected the excess, but unread buffered stdout could keep asyncio's process wait pending after the child was killed. Cleanup now discards the remaining stdout in bounded chunks before waiting, with both operations shielded through repeated cancellation. Closing an active provider leaves stdout ownership with its request, preventing competing readers. A controlled-process regression checks rejection, complete cleanup and recovery of the next search without live provider requests or user narration. That regression fails against the original helper and passes with the correction. The final Linux/Python 3.12 suite passed 948 tests with the same two skips; lint and source/wheel builds passed.
+
 ## Next milestones
 
 1. Benchmark real recordings and noisy live speech; add multilingual semantic analyzers and better relationship/negation handling.
