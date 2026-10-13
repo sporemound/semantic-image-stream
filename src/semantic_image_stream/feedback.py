@@ -46,7 +46,12 @@ def _context_key(topic):
     # The vote evaluates the exact immutable context that produced this image.
     # Only its digest is stored; the raw recording never enters the feedback file.
     fields = ("query", "scene", "summary", "kind", "queries", "visual_subjects", "concepts", "context")
-    return _digest({field: getattr(topic, field, "") for field in fields})
+    data = {field: getattr(topic, field, "") for field in fields}
+    guide = getattr(topic, "image_guidance", None)
+    strength = getattr(topic, "guidance_strength", None)
+    if isinstance(guide, str) and guide.strip() and strength != 0:
+        data.update(image_guidance=guide, guidance_strength=strength)
+    return _digest(data)
 
 
 def _image_key(candidate):

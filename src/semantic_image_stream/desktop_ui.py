@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from html import escape
+import hashlib
+import json
 from pathlib import Path
 import sys
 import threading
@@ -14,7 +16,7 @@ from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
-    QPushButton, QScrollArea, QSizePolicy, QSplitter, QTabWidget, QTextEdit,
+    QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSplitter, QTabWidget, QTextEdit,
     QVBoxLayout, QWidget,
 )
 
@@ -47,7 +49,7 @@ QPushButton#start { color: #072420; background: #86d4c4; border-color: #86d4c4; 
 QPushButton#start:hover { background: #b0eadb; }
 QComboBox, QDoubleSpinBox, QLineEdit { background: #101a26; border: 1px solid #36485b; border-radius: 4px; padding: 5px; }
 QComboBox QAbstractItemView { background: #182638; selection-background-color: #305767; }
-QTextEdit, QListWidget { background: #0e1722; border: 1px solid #2c3b4b; border-radius: 5px; }
+QTextEdit, QPlainTextEdit, QListWidget { background: #0e1722; border: 1px solid #2c3b4b; border-radius: 5px; }
 QListWidget::item { padding: 8px; border-bottom: 1px solid #202f40; }
 QListWidget::item:selected { background: #294f5b; }
 QTabWidget::pane { border: 0; }
@@ -79,6 +81,15 @@ class EventRelay(QObject):
     session_status = Signal(str)
 
 
+class BookGuidanceEditor(QPlainTextEdit):
+    """Plain multiline text, preserving the existing field helper interface."""
+    def text(self) -> str:
+        return self.toPlainText()
+
+    def setText(self, text: str) -> None:
+        self.setPlainText(text)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, settings: Settings, config_path: str | Path | None = None):
         super().__init__()
@@ -89,6 +100,9 @@ class MainWindow(QMainWindow):
         self._session_store = None
         self._session_store_generation = 0
         self._session_book_context = settings.book_context.strip()
+        self._applied_book_guidance = (settings.book_context.strip(), settings.book_guidance_strength)
+        self._guidance_revision = -1
+        self._guidance_pending = None
         self._transcript_segments: list[TranscriptSegment] = []
         self._context_payload: dict = {}
         self._context_frozen = False
@@ -411,11 +425,29 @@ class MainWindow(QMainWindow):
         self.context_model.setPlaceholderText("qwen2.5:7b")
         self.context_model.setToolTip("Name of an installed local Ollama model. Narration stays on this computer.")
         self.form.addRow("Local context model", self.context_model)
-        self.book_context = QLineEdit(self.settings.book_context)
-        self.book_context.setPlaceholderText("Optional title, setting, or background")
-        self.book_context.setToolTip("Optional background for local interpretation. Changes re-read the retained transcript next time monitoring starts. New book clears recorded text.")
-        self.form.addRow("Book or context", self.book_context)
-        self.input_controls.extend([self.interpreter, self.context_model, self.book_context])
+        self.book_context = BookGuidanceEditor(self.settings.book_context)
+        self.book_context.setFixedHeight(110)
+        self.book_context.setAccessibleName("Book or context")
+        self.book_context.setPlaceholderText("Title, setting, atmosphere, visual details, or background")
+        self.book_context.setToolTip("Optional local guidance for image searches and relevance. Select Apply book guidance to use edits during monitoring. The spoken scene remains authoritative.")
+        self.form.addRow(QLabel("Book or context"))
+        self.form.addRow(self.book_context)
+        self.book_guidance_strength = self._spin(0, 1, self.settings.book_guidance_strength, .05)
+        self.book_guidance_strength.setAccessibleName("Book guidance strength")
+        self.book_guidance_strength.setToolTip("0 adds no manual image guidance. Higher values give your background more influence while retaining the current spoken scene.")
+        self.form.addRow("Guidance strength", self.book_guidance_strength)
+        self.apply_book_guidance_button = QPushButton("Apply book guidance")
+        self.apply_book_guidance_button.clicked.connect(self.apply_book_guidance)
+        self.form.addRow(self.apply_book_guidance_button)
+        self.book_guidance_status = QLabel()
+        self.book_guidance_status.setObjectName("status")
+        self.book_guidance_status.setWordWrap(True)
+        self.book_guidance_status.setTextFormat(Qt.TextFormat.PlainText)
+        self.form.addRow(self.book_guidance_status)
+        self.book_context.textChanged.connect(self._book_guidance_edited)
+        self.book_guidance_strength.valueChanged.connect(self._book_guidance_edited)
+        self._book_guidance_edited()
+        self.input_controls.extend([self.interpreter, self.context_model])
         self.retain_context = QCheckBox("Keep context between launches")
         self.retain_context.setChecked(self.settings.retain_context)
         self.retain_context.setToolTip("Keep transcript and story context on this computer. Turning this off leaves any existing saved book until New book or Delete session history clears it. Audio is never saved.")
@@ -572,6 +604,7 @@ class MainWindow(QMainWindow):
             "whisper_device": self.whisper_device.currentData(), "ranking": self.ranking.currentData(),
             "semantic_provider": self.interpreter.currentData(), "context_model": self.context_model.text().strip(),
             "book_context": self.book_context.text().strip(),
+            "book_guidance_strength": self.book_guidance_strength.value(),
             "retain_context": self.retain_context.isChecked(),
             "use_story_examples": self.use_story_examples.isChecked(),
             "providers": [name for name, check in self.provider_boxes.items() if check.isChecked()],
@@ -655,7 +688,10 @@ class MainWindow(QMainWindow):
         if self._closing or self._stopping or not self._monitoring:
             return
         try:
-            settings = self._read_settings(require_recording=False)
+            settings = deepcopy(self.settings)
+            for name, value in self._collect_image_filters().items():
+                setattr(settings, name, value)
+            settings.validate()
             update = getattr(self.pipeline, "update_image_filters", None)
             if callable(update):
                 update(deepcopy(settings))
@@ -687,6 +723,7 @@ class MainWindow(QMainWindow):
             self.interpreter.setCurrentIndex(self.interpreter.findData(self.settings.semantic_provider))
             self.context_model.setText(self.settings.context_model)
             self.book_context.setText(self.settings.book_context)
+            self.book_guidance_strength.setValue(self.settings.book_guidance_strength)
             self.use_story_examples.setChecked(self.settings.use_story_examples)
             for provider, check in self.provider_boxes.items():
                 check.setChecked(provider in self.settings.providers)
@@ -741,6 +778,97 @@ class MainWindow(QMainWindow):
             self.context_model.setEnabled(not (self._monitoring or self._stopping)
                                           and self.interpreter.currentData() == "ollama")
 
+    def _draft_book_guidance(self) -> tuple[str, float]:
+        return self.book_context.text().strip(), self.book_guidance_strength.value()
+
+    @staticmethod
+    def _guidance_pair_marker(pair: tuple[str, float]) -> str:
+        payload = json.dumps((pair[0].strip(), float(pair[1])), ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _update_book_guidance_controls(self) -> None:
+        if not hasattr(self, "apply_book_guidance_button"):
+            return
+        enabled = not self._stopping and not self._closing
+        self.book_context.setEnabled(enabled)
+        self.book_guidance_strength.setEnabled(enabled)
+        text, strength = self._draft_book_guidance()
+        self.apply_book_guidance_button.setEnabled(enabled and len(text) <= 2000
+                and (text, strength) != self._applied_book_guidance and self._guidance_pending is None)
+
+    def _book_guidance_edited(self, *args) -> None:
+        self._update_book_guidance_controls()
+        text, strength = self._draft_book_guidance()
+        if len(text) > 2000:
+            self.book_guidance_status.setText("Keep book guidance within 2,000 characters.")
+        elif self._guidance_pending is not None:
+            self.book_guidance_status.setText("Applying book guidance locally…" if
+                    (text, strength) == self._guidance_pending[0] else
+                    "Applying the previous guidance; these edits remain a draft.")
+        elif (text, strength) != self._applied_book_guidance:
+            self.book_guidance_status.setText(f"{len(text)} characters · draft guidance; select Apply to use it.")
+        else:
+            self.book_guidance_status.setText("Book guidance applied locally." if text else
+                                              "Optional guidance · the spoken story stays local.")
+
+    def apply_book_guidance(self) -> None:
+        if self._stopping or self._closing or self._guidance_pending is not None:
+            return
+        try:
+            settings = deepcopy(self.settings)
+            settings.book_context, settings.book_guidance_strength = self._draft_book_guidance()
+            settings.validate()
+            pair = settings.book_context, settings.book_guidance_strength
+            if pair == self._applied_book_guidance:
+                return
+            if self._monitoring:
+                update = getattr(self.pipeline, "update_book_guidance", None)
+                if not callable(update):
+                    raise RuntimeError("Book guidance cannot be applied yet. Try again.")
+                self._guidance_pending = pair, self._guidance_revision
+                self._book_guidance_edited()
+                update(deepcopy(settings))
+            else:
+                self._applied_book_guidance = pair
+                self._session_book_context = pair[0]
+                self.settings.book_context, self.settings.book_guidance_strength = pair
+                self._guidance_revision += 1
+                if self._session_state is not None:
+                    with self._session_state.lock:
+                        self._session_state.book_context, self._session_state.book_guidance_strength = pair
+                        self._session_state.guidance_revision = self._guidance_revision
+                        self._session_state.guidance_draft_marker = ""
+                        self._session_state.guidance_draft_revision = self._guidance_revision
+                self.slideshow.reset_playback()
+                self._save_story_metadata()
+                self._book_guidance_edited()
+                self.book_guidance_status.setText("Book guidance applied locally. Start monitoring to use it.")
+        except Exception as exc:
+            self._guidance_pending = None
+            self._update_book_guidance_controls()
+            self.book_guidance_status.setText(str(exc))
+
+    def _accept_book_guidance(self, payload: dict) -> None:
+        """Accept worker metadata even when Stop freezes visual/context updates."""
+        if payload.get("phase") != "ready":
+            return
+        text, strength = payload.get("book_context"), payload.get("book_guidance_strength")
+        revision = payload.get("guidance_revision")
+        if (not isinstance(text, str) or len(text) > 2000 or
+                not isinstance(strength, (int, float)) or isinstance(strength, bool) or not 0 <= strength <= 1 or
+                not isinstance(revision, int) or isinstance(revision, bool) or revision < self._guidance_revision):
+            return
+        pair = text.strip(), float(strength)
+        if revision == self._guidance_revision and pair != self._applied_book_guidance:
+            return
+        self._guidance_revision = revision
+        self._applied_book_guidance = pair
+        self._session_book_context = pair[0]
+        self.settings.book_context, self.settings.book_guidance_strength = pair
+        if self._guidance_pending is not None and pair == self._guidance_pending[0]:
+            self._guidance_pending = None
+        self._book_guidance_edited()
+
     def _store_status_callback(self):
         generation = self._session_store_generation
         reference = weakref.ref(self)
@@ -777,17 +905,27 @@ class MainWindow(QMainWindow):
                 self._show_session_status(str(exc))
                 return
             if restore and saved is not None:
+                configured_pair = self.settings.book_context.strip(), self.settings.book_guidance_strength
+                keep_draft = (saved.guidance_draft_marker == self._guidance_pair_marker(configured_pair)
+                              and saved.guidance_draft_revision == saved.guidance_revision)
                 self._session_state = saved
                 self.settings.book_context = saved.book_context
-                self.book_context.setText(saved.book_context)
+                self.settings.book_guidance_strength = saved.book_guidance_strength
+                editor_pair = configured_pair if keep_draft else (saved.book_context, saved.book_guidance_strength)
+                self.book_context.setText(editor_pair[0])
+                self.book_guidance_strength.setValue(editor_pair[1])
                 self._session_book_context = saved.book_context.strip()
+                self._applied_book_guidance = saved.book_context.strip(), saved.book_guidance_strength
+                self._guidance_revision = saved.guidance_revision
+                self._book_guidance_edited()
                 self._show_transcript(list(saved.segments))
                 if saved.topic is not None:
                     self._handle_event(self._session, "topic", saved.topic)
                 self._context_frozen = True
                 self._retrieval_message = "Images: saved book loaded. Start monitoring to resume."
                 self._refresh_image_status()
-                self._show_session_status(f"Last book restored locally · {len(saved.segments)} recorded passages")
+                draft_message = " · saved guidance draft is ready to Apply" if keep_draft else ""
+                self._show_session_status(f"Last book restored locally · {len(saved.segments)} recorded passages{draft_message}")
         self._session_store.on_status = self._store_status_callback()
         if self._session_state is not None:
             self._session_store.bind(self._session_state)
@@ -813,8 +951,9 @@ class MainWindow(QMainWindow):
         if not self.retain_context.isChecked() or self._session_state is None:
             return
         self._prepare_session_store()
-        with self._session_state.lock:
-            self._session_state.book_context = self.book_context.text().strip()
+        if not (self._monitoring or self._stopping):
+            with self._session_state.lock:
+                self._session_state.book_context, self._session_state.book_guidance_strength = self._applied_book_guidance
         if flush:
             self._session_store.flush(self._session_state)
         else:
@@ -834,6 +973,10 @@ class MainWindow(QMainWindow):
         self._session_state = None
         self.pipeline = None
         self._session_book_context = book_context
+        self._applied_book_guidance = book_context, self.book_guidance_strength.value()
+        self._guidance_revision = -1
+        self._guidance_pending = None
+        self._book_guidance_edited()
         self._transcript_segments.clear()
         self._context_payload.clear()
         self._feedback_topic = None
@@ -973,10 +1116,15 @@ class MainWindow(QMainWindow):
             self._restore_displayed_ledger()
             changed_background = self.settings.book_context != self._session_book_context
             self._session_book_context = self.settings.book_context
+            self._applied_book_guidance = self.settings.book_context, self.settings.book_guidance_strength
+            self._guidance_pending = None
             if self._session_state is None:
                 self._session_state = SessionState()
             with self._session_state.lock:
                 self._session_state.book_context = self.settings.book_context
+                self._session_state.book_guidance_strength = self.settings.book_guidance_strength
+                self._guidance_revision = self._session_state.guidance_revision
+            self._book_guidance_edited()
             if self.retain_context.isChecked():
                 self._prepare_session_store()
             self._session += 1
@@ -1004,7 +1152,7 @@ class MainWindow(QMainWindow):
             self._refresh_image_status()
             self._update_controls()
             self.status_label.setObjectName("status")
-            self.status_label.setText("Book/context updated · re-reading the retained transcript locally…" if changed_background
+            self.status_label.setText("Starting monitoring with the edited book guidance…" if changed_background
                                       else "Starting local speech recognition…")
             self.pipeline.start()
         except Exception as exc:
@@ -1038,6 +1186,7 @@ class MainWindow(QMainWindow):
             control.setEnabled(not active)
         self._preset_selected()
         self._update_context_controls()
+        self._update_book_guidance_controls()
         self._update_feedback_controls()
         self._update_image_filter_controls()
         if not active:
@@ -1058,12 +1207,15 @@ class MainWindow(QMainWindow):
             self._error(str(payload))
         elif kind == "stopped":
             self._monitoring = self._stopping = False
+            self._guidance_pending = None
+            self._book_guidance_edited()
             self._context_frozen = True
             self._update_controls()
             self.status_label.setText(self._last_error or "Monitoring stopped · transcript and context retained")
         elif kind == "transcript":
             self._show_transcript(payload)
         elif kind == "context":
+            self._accept_book_guidance(payload)
             if not self._context_frozen:
                 self._show_context(payload)
         elif kind == "topic":
@@ -1437,6 +1589,13 @@ class MainWindow(QMainWindow):
                 destination = Path(path)
             settings.save(destination)
             self.config_path = destination
+            if self._session_state is not None:
+                pair = settings.book_context, settings.book_guidance_strength
+                with self._session_state.lock:
+                    accepted = (self._session_state.book_context, self._session_state.book_guidance_strength)
+                    self._session_state.guidance_draft_marker = (self._guidance_pair_marker(pair)
+                                                                if pair != accepted else "")
+                    self._session_state.guidance_draft_revision = self._session_state.guidance_revision
             if not self._monitoring:
                 self.settings = settings
             self._save_story_metadata()

@@ -31,7 +31,8 @@ time_filter_include_undated = false # when enabled, strict source date evidence 
 exclude_ai_generated = true # source labels and embedded metadata, not pixel detection
 semantic_provider = "ollama" # full session; contextual/spacy are basic alternatives
 context_model = "qwen2.5:7b" # complete cached local GGUF model; no cloud models
-book_context = "" # optional title/setting/background; edits re-read retained text
+book_context = "" # visual brief: setting, concrete imagery, themes; stays local
+book_guidance_strength = 0.65 # 0..1; stronger separate book contribution to image ranking
 retain_context = true # automatically save and restore the last local story
 session_dir = "" # blank = %LOCALAPPDATA%/SemanticImageStream/sessions on Windows
 training_dir = "" # blank = local training folder, then bundled public starter pack

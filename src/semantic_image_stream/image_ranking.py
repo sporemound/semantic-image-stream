@@ -18,6 +18,25 @@ log = logging.getLogger(__name__)
 LEXICAL_FEEDBACK_FINGERPRINT = hashlib.sha256(b"semantic-image-stream:feedback-lexical-v1:512").hexdigest()
 
 
+def _book_components(topic, settings):
+    from .book_guidance import guidance_for
+    text, strength = guidance_for(topic, settings)
+    book = .35 * strength if text else 0.0
+    # Scene stays the largest component even at maximum book guidance; every
+    # recorded token retains at least .15625 of the complete context score.
+    return text, book, (.50 - .375 * book, .30 - .50 * book, .20 - .125 * book)
+
+
+def _context_fingerprint(encoder, method, topic, settings):
+    from .book_guidance import GUIDANCE_VERSION
+    _, book, weights = _book_components(topic, settings)
+    if not book:
+        return encoder  # Existing unguided votes keep their compatible vectors.
+    identity = {"encoder": encoder, "method": method, "guidance": GUIDANCE_VERSION,
+                "blend": "separate-book-v1", "book": book, "scene_summary_history": weights}
+    return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def _lexical_feedback_vector(texts):
     """Deterministic local features for the metadata baseline, separate from CLIP."""
     import numpy as np
@@ -91,6 +110,10 @@ class MetadataRanker:
     """Scores lie in 0..1, but are heuristic scores, not calibrated probability."""
     name = "metadata"
     feedback = None
+    settings = None  # Compatible subclasses may provide their own constructor.
+
+    def __init__(self, settings=None):
+        self.settings = settings
 
     def _has_feedback(self):
         if self.feedback is None:
@@ -108,14 +131,17 @@ class MetadataRanker:
         scene = _lexical_feedback_vector((topic.scene, *topic.visual_subjects, topic.query))
         summary = _lexical_feedback_vector((topic.summary,))
         history = _lexical_feedback_vector(topic.transcript or (topic.context,))
-        vector = scene * .50 + summary * .30 + history * .20
+        guide, book, weights = _book_components(topic, self.settings)
+        vector = scene * weights[0] + summary * weights[1] + history * weights[2]
+        if book:
+            vector += _lexical_feedback_vector((guide,)) * book
         norm = np.linalg.norm(vector)
         return vector / norm if norm > 1e-8 else vector
 
     def feedback_vectors(self, topic, candidate):
         return {"image_vector": _lexical_feedback_vector((candidate.title, candidate.description)).tolist(),
                 "context_vector": self._lexical_context_vector(topic).tolist(),
-                "encoder_fingerprint": LEXICAL_FEEDBACK_FINGERPRINT}
+                "encoder_fingerprint": _context_fingerprint(LEXICAL_FEEDBACK_FINGERPRINT, self.name, topic, self.settings)}
 
     def _personalize(self, scores, images, context, fingerprint):
         if self.feedback is None:
@@ -132,6 +158,8 @@ class MetadataRanker:
     def rank(self, topic: Topic, candidates: list[ImageCandidate], recent: list[str]) -> list[ImageCandidate]:
         query = tokens(topic.query)
         context = tokens(topic.scene + " " + topic.summary) if topic.scene or topic.summary else tokens(topic.context)
+        guide, book, _ = _book_components(topic, self.settings)
+        guide_vector = _lexical_feedback_vector((guide,)) if book else None
         ranked = []
         for c in candidates:
             if is_duplicate(c.phash, recent):
@@ -154,11 +182,15 @@ class MetadataRanker:
                 c.score = min(1.0, 0.72 * overlap + 0.06 * contextual + 0.08 * credible + 0.05 * specific + 0.09 * quality)
             # A credible/high-res unrelated picture must not pass on quality alone.
             if overlap > 0:
+                if book:
+                    fit = max(0.0, float(_lexical_feedback_vector((c.title, c.description)) @ guide_vector))
+                    c.score = (1 - book) * c.score + book * fit
                 ranked.append(c)
         if ranked and self._has_feedback():
             vectors = [_lexical_feedback_vector((candidate.title, candidate.description)) for candidate in ranked]
             scores = self._personalize([candidate.score for candidate in ranked], vectors,
-                                      self._lexical_context_vector(topic), LEXICAL_FEEDBACK_FINGERPRINT)
+                                      self._lexical_context_vector(topic),
+                                      _context_fingerprint(LEXICAL_FEEDBACK_FINGERPRINT, self.name, topic, self.settings))
             for candidate, score in zip(ranked, scores):
                 candidate.score = score
         return sorted(ranked, key=lambda c: c.score, reverse=True)
@@ -176,19 +208,62 @@ class ClipRanker(MetadataRanker):
         self._rank_lock = threading.Lock()
         self._encoder_snapshot = None
         self._feedback_encoder_fingerprint = None
+        self._manual_text = None
+        self._manual_embedding = None
+
+    def _windows(self, text):
+        tokenizer = self.processor.tokenizer
+        ids = tokenizer.encode(text, add_special_tokens=False, truncation=False, verbose=False)
+        limit = max(1, min(75, int(tokenizer.model_max_length) - 2))
+        return [(ids[index:index + limit], len(ids[index:index + limit]))
+                for index in range(0, len(ids), limit)]
+
+    def _text_sum(self, texts):
+        import torch
+        windows = [window for text in texts for window in self._windows(text)]
+        total, weight = None, 0
+        for offset in range(0, len(windows), 16):
+            batch = windows[offset:offset + 16]
+            # Exact IDs preserve all supplied tokens without re-tokenization.
+            prepared = [self.processor.tokenizer.prepare_for_model(ids, add_special_tokens=True,
+                        return_attention_mask=True, truncation=False) for ids, _ in batch]
+            inputs = self.processor.tokenizer.pad(prepared, return_tensors="pt", padding=True)
+            inputs = {key: value.to(self.device) for key, value in inputs.items()}
+            with torch.inference_mode():
+                vectors = self.model.get_text_features(**inputs).float()
+                vectors = vectors / vectors.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+            weights = torch.tensor([length for _, length in batch], device=self.device, dtype=vectors.dtype)
+            subtotal = (vectors * weights[:, None]).sum(dim=0)
+            total = subtotal if total is None else total + subtotal
+            weight += sum(length for _, length in batch)
+        return total, weight
+
+    def _text_vector(self, texts):
+        total, _ = self._text_sum(texts)
+        return None if total is None else total / total.norm().clamp_min(1e-8)
+
+    def _manual_vector(self, text):
+        # One latest full-brief vector is enough; advancing images must not
+        # repeatedly encode a stable manual description under model load.
+        if text != self._manual_text:
+            self._manual_embedding = self._text_vector((text,))
+            self._manual_text = text
+        return self._manual_embedding
 
     def _feedback_fingerprint(self):
         if self._feedback_encoder_fingerprint is None:
             self._feedback_encoder_fingerprint = _fingerprint_snapshot(self._encoder_snapshot)
         return self._feedback_encoder_fingerprint
 
-    def _personalize_pixels(self, scores, vectors, context):
+    def _personalize_pixels(self, scores, vectors, context, topic=None):
         if not self._has_feedback():
             return scores
         try:
             fingerprint = self._feedback_fingerprint()
         except RuntimeError:
             return scores
+        if topic is not None:
+            fingerprint = _context_fingerprint(fingerprint, self.name, topic, self.settings)
         return self._personalize(scores, vectors.detach().cpu().numpy(),
                                  context.detach().cpu().numpy(), fingerprint)
 
@@ -206,9 +281,16 @@ class ClipRanker(MetadataRanker):
                     inputs = {key: value.to(self.device) for key, value in inputs.items()}
                     with torch.inference_mode():
                         output = self.model(**inputs)
+            guide, book, _ = _book_components(topic, self.settings)
+            context = output.text_embeds[0]
+            if book:
+                manual = self._manual_vector(guide)
+                if manual is not None:
+                    context = context * (1 - book) + manual * book
+                    context = context / context.norm().clamp_min(1e-8)
             return {"image_vector": output.image_embeds[0].detach().cpu().tolist(),
-                    "context_vector": output.text_embeds[0].detach().cpu().tolist(),
-                    "encoder_fingerprint": self._feedback_fingerprint()}
+                    "context_vector": context.detach().cpu().tolist(),
+                    "encoder_fingerprint": _context_fingerprint(self._feedback_fingerprint(), self.name, topic, self.settings)}
 
     def _load(self, local_only=False, snapshot=None):
         try:
@@ -274,6 +356,8 @@ class ClipRanker(MetadataRanker):
             similarities = []
             pixel_vectors, text_vector = [], None
             personalizing = self._has_feedback()
+            guide, book, _ = _book_components(topic, self.settings)
+            manual = self._manual_vector(guide) if book else None
             # Small batches keep RAM/VRAM bounded. CPU is the default for CLIP.
             for offset in range(0, len(candidates), 4):
                 batch = candidates[offset:offset + 4]
@@ -287,10 +371,16 @@ class ClipRanker(MetadataRanker):
                     # logits include a learned scale; divide it out to get cosine.
                     out = self.model(**inputs)
                     scores = out.logits_per_image[:, 0] / self.model.logit_scale.exp()
+                    if manual is not None:
+                        scores = scores * (1 - book) + (out.image_embeds @ manual) * book
                 similarities.extend(scores.detach().cpu().tolist())
                 if personalizing:
                     pixel_vectors.extend(out.image_embeds.detach().cpu().tolist())
-                    text_vector = out.text_embeds[0].detach().cpu().tolist()
+                    context = out.text_embeds[0]
+                    if manual is not None:
+                        context = context * (1 - book) + manual * book
+                        context = context / context.norm().clamp_min(1e-8)
+                    text_vector = context.detach().cpu().tolist()
                 for im in images:
                     im.close()
         for c, similarity in zip(candidates, similarities):
@@ -301,7 +391,8 @@ class ClipRanker(MetadataRanker):
         if pixel_vectors and text_vector is not None:
             try:
                 personalized = self._personalize([c.score for c in candidates], pixel_vectors,
-                                                  text_vector, self._feedback_fingerprint())
+                                                  text_vector, _context_fingerprint(self._feedback_fingerprint(), self.name,
+                                                                                    topic, self.settings))
             except RuntimeError:
                 personalized = [c.score for c in candidates]
             for candidate, score in zip(candidates, personalized):
@@ -326,38 +417,6 @@ class ContextClipRanker(ClipRanker):
         self._history_weight = 0
         self._rank_lock = threading.Lock()
 
-    def _windows(self, text):
-        tokenizer = self.processor.tokenizer
-        ids = tokenizer.encode(text, add_special_tokens=False, truncation=False, verbose=False)
-        limit = max(1, min(75, int(tokenizer.model_max_length) - 2))
-        return [(ids[index:index + limit], len(ids[index:index + limit]))
-                for index in range(0, len(ids), limit)]
-
-    def _text_sum(self, texts):
-        import torch
-        windows = [window for text in texts for window in self._windows(text)]
-        total, weight = None, 0
-        for offset in range(0, len(windows), 16):
-            batch = windows[offset:offset + 16]
-            # Build from exact token IDs: decoding and re-tokenizing can expand
-            # windows past CLIP's limit and silently discard trailing content.
-            prepared = [self.processor.tokenizer.prepare_for_model(ids, add_special_tokens=True,
-                        return_attention_mask=True, truncation=False) for ids, _ in batch]
-            inputs = self.processor.tokenizer.pad(prepared, return_tensors="pt", padding=True)
-            inputs = {key: value.to(self.device) for key, value in inputs.items()}
-            with torch.inference_mode():
-                vectors = self.model.get_text_features(**inputs).float()
-                vectors = vectors / vectors.norm(dim=-1, keepdim=True).clamp_min(1e-8)
-            weights = torch.tensor([length for _, length in batch], device=self.device, dtype=vectors.dtype)
-            subtotal = (vectors * weights[:, None]).sum(dim=0)
-            total = subtotal if total is None else total + subtotal
-            weight += sum(length for _, length in batch)
-        return total, weight
-
-    def _text_vector(self, texts):
-        total, _ = self._text_sum(texts)
-        return None if total is None else total / total.norm().clamp_min(1e-8)
-
     def _history_vector(self, transcript):
         transcript = tuple(transcript)
         if transcript[:len(self._history)] != self._history:
@@ -380,11 +439,16 @@ class ContextClipRanker(ClipRanker):
 
     def _context_vectors(self, topic):
         history = self._history_vector(topic.transcript or (topic.context,))
-        background = getattr(self.settings, "book_context", "")
-        summary = self._text_vector((background, topic.summary)) if background or topic.summary else history
+        guide, book, weights = _book_components(topic, self.settings)
+        summary = self._text_vector((topic.summary,)) if topic.summary else history
         scene = self._text_vector((topic.scene, *topic.visual_subjects)) if topic.scene else summary
-        return [(vector, weight) for vector, weight in ((scene, .50), (summary, .30), (history, .20))
-                if vector is not None]
+        contexts = [(vector, weight) for vector, weight in ((scene, weights[0]), (summary, weights[1]), (history, weights[2]))
+                    if vector is not None]
+        if book:
+            manual = self._manual_vector(guide)
+            if manual is not None:
+                contexts.append((manual, book))
+        return contexts
 
     @staticmethod
     def _combined_context(contexts):
@@ -412,7 +476,7 @@ class ContextClipRanker(ClipRanker):
                         image = image / image.norm().clamp_min(1e-8)
             return {"image_vector": image.detach().cpu().tolist(),
                     "context_vector": self._combined_context(contexts).detach().cpu().tolist(),
-                    "encoder_fingerprint": self._feedback_fingerprint()}
+                    "encoder_fingerprint": _context_fingerprint(self._feedback_fingerprint(), self.name, topic, self.settings)}
 
     def rank(self, topic, candidates, recent):
         import torch
@@ -440,7 +504,7 @@ class ContextClipRanker(ClipRanker):
                         vectors = self.model.get_image_features(**inputs).float()
                         vectors = vectors / vectors.norm(dim=-1, keepdim=True).clamp_min(1e-8)
                         scores = self._score_vectors(vectors, contexts)
-                        scores = self._personalize_pixels(scores, vectors, self._combined_context(contexts))
+                        scores = self._personalize_pixels(scores, vectors, self._combined_context(contexts), topic)
                     for candidate, score in zip(batch, scores):
                         candidate.score = score
                 finally:
@@ -540,4 +604,4 @@ def build_ranker(settings, gpu_lock=None):
         return LearnedContextRanker(settings, gpu_lock)
     if settings.ranking == "context_clip":
         return ContextClipRanker(settings, gpu_lock)
-    return ClipRanker(settings, gpu_lock) if settings.ranking == "clip" else MetadataRanker()
+    return ClipRanker(settings, gpu_lock) if settings.ranking == "clip" else MetadataRanker(settings)

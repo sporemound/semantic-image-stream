@@ -40,6 +40,7 @@ class Settings:
     semantic_provider: str = "contextual"
     context_model: str = "qwen2.5:7b"
     book_context: str = ""
+    book_guidance_strength: float = 0.65
     retain_context: bool = True
     session_dir: str = ""
     training_dir: str = ""
@@ -118,6 +119,9 @@ class Settings:
             raise ValueError("context_model must name a local installed model")
         if not isinstance(self.book_context, str) or len(self.book_context) > 2000:
             raise ValueError("book_context must contain at most 2000 characters")
+        if (not isinstance(self.book_guidance_strength, (int, float)) or isinstance(self.book_guidance_strength, bool)
+                or not math.isfinite(self.book_guidance_strength) or not 0 <= self.book_guidance_strength <= 1):
+            raise ValueError("book_guidance_strength must be between 0 and 1")
         if not isinstance(self.retain_context, bool):
             raise ValueError("retain_context must be true or false")
         if (not isinstance(self.session_dir, str) or len(self.session_dir) > 4096

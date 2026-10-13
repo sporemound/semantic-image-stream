@@ -835,7 +835,7 @@ def test_changing_book_background_reuses_all_recorded_text_with_an_explanation(w
     assert current.session_state is previous.session_state
     assert current.settings.book_context == "A new historical book"
     assert "Previous context." in window.transcript.toPlainText()
-    assert "re-reading the retained transcript" in window.status_label.text()
+    assert "edited book guidance" in window.status_label.text()
 
 
 def test_delete_history_also_resets_all_local_context(window, recording_context_pipeline):
@@ -886,7 +886,7 @@ def test_context_changes_even_when_search_query_stays_the_same(window):
     assert "launch vehicle" not in window.context_text.toPlainText()
 
 
-def test_context_controls_persist_and_are_disabled_during_capture(window, tmp_path):
+def test_context_controls_persist_and_book_guidance_stays_editable_during_capture(window, tmp_path):
     window.config_path = tmp_path / "context.toml"
     window.interpreter.setCurrentIndex(window.interpreter.findData("ollama"))
     assert window.context_model.isEnabled()
@@ -901,7 +901,8 @@ def test_context_controls_persist_and_are_disabled_during_capture(window, tmp_pa
         window._monitoring, window._stopping = monitoring, stopping
         window._update_controls()
         assert not window.interpreter.isEnabled() and not window.context_model.isEnabled()
-        assert not window.book_context.isEnabled() and not window.new_book_button.isEnabled()
+        assert window.book_context.isEnabled() == (not stopping)
+        assert not window.new_book_button.isEnabled()
         window.new_book()
         assert window.book_context.text() == saved.book_context
     window._monitoring = window._stopping = False

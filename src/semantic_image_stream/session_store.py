@@ -58,7 +58,8 @@ def _topic_fields(topic):
     if topic is None:
         return None
     fields = {key: getattr(topic, key) for key in ("query", "concepts", "kind", "summary", "scene",
-                                                  "visual_subjects", "queries", "context_used_segments", "visual_update")}
+                                                  "visual_subjects", "queries", "context_used_segments", "visual_update",
+                                                  "image_guidance", "guidance_strength", "guidance_only")}
     return {key: list(value) if isinstance(value, tuple) else value for key, value in fields.items()}
 
 
@@ -68,6 +69,9 @@ def snapshot_session(state) -> dict:
     with state.lock:
         return {"version": SCHEMA_VERSION, "session_id": state.session_id, "revision": state.revision,
                 "saved_at": time.time(), "book_context": state.book_context,
+                "book_guidance_strength": state.book_guidance_strength, "guidance_revision": state.guidance_revision,
+                "guidance_draft_marker": state.guidance_draft_marker,
+                "guidance_draft_revision": state.guidance_draft_revision,
                 "provider_key": list(state.provider_key), "segments": [asdict(segment) for segment in state.segments],
                 "topic": _topic_fields(state.topic), "analyzer_checkpoint": deepcopy(state.analyzer_checkpoint)}
 
@@ -82,6 +86,14 @@ def restore_session(data):
         raise ValueError("Invalid saved session identity")
     revision = _integer(data.get("revision"))
     book = _text(data.get("book_context", ""), 2000)
+    strength = data.get("book_guidance_strength", .65)
+    if not _finite_number(strength) or not 0 <= strength <= 1:
+        raise ValueError("Invalid saved guidance strength")
+    guidance_revision = _integer(data.get("guidance_revision", 0))
+    draft_marker = data.get("guidance_draft_marker", "")
+    if not isinstance(draft_marker, str) or (draft_marker and not re.fullmatch(r"[a-f0-9]{64}", draft_marker)):
+        raise ValueError("Invalid saved guidance draft marker")
+    draft_revision = _integer(data.get("guidance_draft_revision", 0))
     key = _texts(data.get("provider_key", []), 4, 2000)
     if key and (len(key) not in {3, 4} or key[0] not in {"contextual", "spacy", "ollama"}
                 or (len(key) == 4 and (key[0] != "ollama" or not re.fullmatch(r"[a-f0-9]{64}", key[3])))):
@@ -99,7 +111,9 @@ def restore_session(data):
         segments.append(TranscriptSegment(start, end, _text(row.get("text"), 1_000_000),
                                           _text(row.get("language", ""), 100)))
     state = SessionState(session_id=session_id, revision=revision, book_context=book,
-                         segments=segments, provider_key=key)
+                         segments=segments, provider_key=key, book_guidance_strength=strength,
+                         guidance_revision=guidance_revision, guidance_draft_marker=draft_marker,
+                         guidance_draft_revision=draft_revision)
     topic = data.get("topic")
     # A damaged derived summary must not discard an otherwise intact recording.
     try:
@@ -113,7 +127,16 @@ def restore_session(data):
                                 visual_subjects=_texts(topic.get("visual_subjects", []), 16),
                                 queries=_texts(topic.get("queries", []), 8, 180), transcript=transcript,
                                 context_used_segments=_integer(topic.get("context_used_segments", 0), 0, len(segments)),
-                                visual_update=_text(topic.get("visual_update", "replace"), 20))
+                                visual_update=_text(topic.get("visual_update", "replace"), 20),
+                                image_guidance=(_text(topic["image_guidance"], 2000)
+                                                if topic.get("image_guidance") is not None else None),
+                                guidance_strength=topic.get("guidance_strength"),
+                                guidance_only=topic.get("guidance_only", False))
+            if not isinstance(state.topic.guidance_only, bool):
+                raise ValueError("Invalid saved topic guidance type")
+            if (state.topic.guidance_strength is not None and
+                    (not _finite_number(state.topic.guidance_strength) or not 0 <= state.topic.guidance_strength <= 1)):
+                raise ValueError("Invalid saved topic guidance")
             if state.topic.visual_update not in {"replace", "retain", "clear"}:
                 raise ValueError("Invalid saved visual update")
     except (ValueError, TypeError):

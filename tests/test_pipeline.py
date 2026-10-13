@@ -4,6 +4,7 @@ Only inference and external network boundaries are substituted here. Live
 recording/model/provider validation is a separate opt-in script.
 """
 import asyncio
+from dataclasses import replace
 import json
 import queue
 import threading
@@ -688,7 +689,9 @@ def test_rebuild_loaded_analyzer_preserves_matching_context_and_scope(tmp_path, 
     pipeline = Pipeline(settings, lambda *args: None, session_state=state)
     assert pipeline._session_analyzer() is fresh
     assert state.analyzer is fresh
-    assert state.topic is pipeline._latest_topic is retained
+    assert state.topic is pipeline._latest_topic
+    assert replace(state.topic, image_guidance=None, guidance_strength=None) == retained
+    assert state.topic.image_guidance == settings.book_context
     assert state.playback_generation == 9 and state.playback_scope is not None
     assert state.segments is segments and len(state.segments) == 330
     assert saved == [1]

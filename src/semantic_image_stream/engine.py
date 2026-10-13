@@ -51,6 +51,10 @@ class SessionState:
     session_id: str = field(default_factory=lambda: uuid4().hex)
     revision: int = 0
     book_context: str = ""
+    book_guidance_strength: float = 0.65
+    guidance_revision: int = 0
+    guidance_draft_marker: str = ""
+    guidance_draft_revision: int = 0
     analyzer_checkpoint: dict | None = None
     on_change: Callable[["SessionState"], None] | None = None
 
@@ -147,7 +151,8 @@ class Pipeline:
         self._history_lock = threading.Lock()
         self._generation = 0
         self._last_search = 0.0
-        self._latest_topic = self.session_state.topic
+        from .book_guidance import snapshot_guidance
+        self._latest_topic = snapshot_guidance(self.session_state.topic, self.settings) if self.session_state.topic else None
         self._approved_images = {}
         self._approved_scope = None
         self._approved_generation = None
@@ -161,6 +166,80 @@ class Pipeline:
         self._loop = None
         self._image_filter_revision = 0
 
+    def update_book_guidance(self, settings):
+        """Apply a visual brief immediately; update interpretation independently."""
+        snapshot = replace(settings, providers=list(settings.providers)).validate()
+        text, strength = snapshot.book_context.strip(), snapshot.book_guidance_strength
+
+        def apply():
+            if (self.settings.book_context, self.settings.book_guidance_strength) == (text, strength):
+                self._emit_context("ready", "The current book guidance is already applied.", guidance_ack=True)
+                return
+            self.settings.book_context, self.settings.book_guidance_strength = text, strength
+            from .book_guidance import guidance_seed, refresh_guidance
+            with self._segments_lock:
+                state = self.session_state
+                state.book_context, state.book_guidance_strength = text, strength
+                state.guidance_revision += 1
+                state.guidance_draft_marker = ""
+                state.provider_key = _interpreter_key(self.settings)
+                state.analyzer_checkpoint = None
+                if self._latest_topic:
+                    self._latest_topic = refresh_guidance(self._latest_topic, self.settings)
+                    state.topic = self._latest_topic
+                else:
+                    self._latest_topic = state.topic = guidance_seed(self.settings, (segment.text for segment in state.segments))
+            self._restart_image_discovery()
+            self.session_state.notify_changed()
+            self._emit_context("ready", "Book guidance applied; spoken context and audio are retained.",
+                               playback_changed=True, guidance_ack=True)
+            # Waiting for a current local-model call must not delay new searches.
+            threading.Thread(target=self._rebind_book_guidance, args=(text, strength, state.guidance_revision),
+                             daemon=True, name="sis-book-guidance").start()
+
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(apply)
+        else:
+            apply()
+
+    def _rebind_book_guidance(self, text, strength, revision):
+        with self.session_state.analysis_lock:
+            with self._segments_lock:
+                state = self.session_state
+                if state.guidance_revision != revision:
+                    return
+                analyzer = state.analyzer
+            update = getattr(analyzer, "update_book_guidance", None)
+            if not callable(update):
+                return
+            try:
+                update(text, strength)
+                checkpoint = analyzer.export_checkpoint()
+            except Exception as exc:
+                log.warning("Book guidance checkpoint update deferred (%s)", type(exc).__name__)
+                return
+            with self._segments_lock:
+                if state.analyzer is analyzer and state.guidance_revision == revision:
+                    state.analyzer_checkpoint = checkpoint
+            state.notify_changed()
+
+    def _restart_image_discovery(self):
+        self._image_filter_revision += 1
+        self._generation += 1
+        with self._segments_lock:
+            self.session_state.playback_generation += 1
+        self._approved_images.clear()
+        self._query_pages.clear()
+        self._refresh_queries.clear()
+        self._fresh_query_cycles.clear()
+        pending = getattr(self, "topic_queue", None)
+        if pending is not None:
+            while not pending.empty():
+                pending.get_nowait()
+            if self._latest_topic and self._latest_topic.query:
+                pending.put_nowait((self._generation, self._latest_topic))
+
     def update_image_filters(self, settings):
         """Apply validated filter controls without restarting capture or narration."""
         snapshot = replace(settings, providers=list(settings.providers)).validate()
@@ -173,21 +252,8 @@ class Pipeline:
                 setattr(self.settings, name, value)
             if previous == (filter_identity(self.settings), self.settings.exclude_ai_generated):
                 return
-            self._image_filter_revision += 1
-            self._generation += 1
-            with self._segments_lock:
-                self.session_state.playback_generation += 1
-            self._approved_images.clear()
-            self._query_pages.clear()
-            self._refresh_queries.clear()
-            self._fresh_query_cycles.clear()
+            self._restart_image_discovery()
             self._emit_context("ready", "Image filters updated; the spoken story is retained.", playback_changed=True)
-            pending = getattr(self, "topic_queue", None)
-            if pending is not None:
-                while not pending.empty():
-                    pending.get_nowait()
-                if self._latest_topic and self._latest_topic.query:
-                    pending.put_nowait((self._generation, self._latest_topic))
 
         loop = self._loop
         if loop is not None and loop.is_running():
@@ -279,9 +345,14 @@ class Pipeline:
             previous_segments = list(self._segments)
         if previous_segments:
             self.emit("transcript", previous_segments)
+        if not self._latest_topic:
+            from .book_guidance import guidance_seed
+            self._latest_topic = self.session_state.topic = guidance_seed(self.settings,
+                (segment.text for segment in previous_segments))
         if self._latest_topic:
             self._last_fill_signature = self._fill_signature(self._latest_topic)
-            self._emit_context("ready", "Retained story context is ready.")
+            self._emit_context("ready", "Retained story context is ready." if not self._latest_topic.guidance_only else
+                               "Images follow your book guidance while local spoken context develops.")
             self.emit("topic", self._latest_topic)
             if self._latest_topic.query:
                 self.topic_queue.put_nowait((self._generation, self._latest_topic))
@@ -368,13 +439,15 @@ class Pipeline:
         if self._latest_topic:
             gate.accept(self._latest_topic)
         last_count = -1
+        last_guidance_revision = -1
         failed_count = -1
         retry_at = 0.0
         while not self.stop_event.is_set():
             with self._segments_lock:
                 window = list(self._segments)
             count = len(window)
-            if (window and count != last_count
+            guidance_revision = self.session_state.guidance_revision
+            if (window and (count != last_count or guidance_revision != last_guidance_revision)
                     and (count != failed_count or time.monotonic() >= retry_at)):
                 self._emit_context("updating", "Updating local story understanding from all recorded text.")
                 topic, changed, refill = None, False, False
@@ -393,10 +466,17 @@ class Pipeline:
                 else:
                     if self.stop_event.is_set():
                         break
+                    if guidance_revision != self.session_state.guidance_revision:
+                        # Reuse the already processed window after the brief is
+                        # revalidated; an obsolete model result cannot publish.
+                        last_count = last_guidance_revision = -1
+                        continue
                     last_count = count
+                    last_guidance_revision = guidance_revision
                     failed_count = -1
                     if topic:
-                        topic = replace(topic, transcript=tuple(segment.text for segment in window))
+                        from .book_guidance import snapshot_guidance
+                        topic = snapshot_guidance(replace(topic, transcript=tuple(segment.text for segment in window)), self.settings)
                         with self._segments_lock:
                             if self.stop_event.is_set():
                                 break
@@ -412,6 +492,7 @@ class Pipeline:
                                 topic = replace(previous, summary=topic.summary, context=topic.context,
                                                 transcript=topic.transcript,
                                                 context_used_segments=topic.context_used_segments,
+                                                image_guidance=topic.image_guidance, guidance_strength=topic.guidance_strength,
                                                 visual_update="retain")
                                 playback_changed, changed = False, False
                             else:
@@ -459,15 +540,40 @@ class Pipeline:
             with self._segments_lock:
                 state = self.session_state
                 exact_key = state.provider_key == key
+                previous_key = state.provider_key
+                guidance_change = (len(previous_key) >= 3 and previous_key[:2] == key[:2]
+                                   and previous_key[3:] == key[3:] and previous_key[2] != key[2])
                 # Adding non-factual illustrations need not replay hours of a
                 # valid saved book. The new analyzer must still verify the old
                 # checkpoint digest and every accepted fact against raw text.
                 legacy_pack_addition = len(key) == 4 and state.provider_key == key[:3]
-                matching = exact_key or legacy_pack_addition
+                matching = exact_key or legacy_pack_addition or guidance_change
                 if state.book_context != self.settings.book_context:
                     state.book_context = self.settings.book_context
                     changed = True
+                if state.book_guidance_strength != self.settings.book_guidance_strength:
+                    state.book_guidance_strength = self.settings.book_guidance_strength
+                    changed = True
                 if state.analyzer is not None and exact_key:
+                    from .book_guidance import snapshot_guidance
+                    if state.topic:
+                        updated = snapshot_guidance(state.topic, self.settings)
+                        changed = changed or updated is not state.topic
+                        state.topic = self._latest_topic = updated
+                    return state.analyzer
+                if guidance_change and callable(getattr(state.analyzer, "update_book_guidance", None)):
+                    from .book_guidance import refresh_guidance
+                    try:
+                        state.analyzer.update_book_guidance(self.settings.book_context, self.settings.book_guidance_strength)
+                        state.analyzer_checkpoint = state.analyzer.export_checkpoint()
+                    except Exception as exc:
+                        state.analyzer_checkpoint = None
+                        log.warning("Restored book guidance waits for a new passage (%s)", type(exc).__name__)
+                    state.provider_key = key
+                    if state.topic:
+                        state.topic = refresh_guidance(state.topic, self.settings)
+                    self._latest_topic = state.topic
+                    changed = True
                     return state.analyzer
                 checkpoint = state.analyzer_checkpoint if matching else None
                 if not matching:
@@ -481,8 +587,13 @@ class Pipeline:
                 state.provider_key = key
                 state.analyzer = None
                 changed = True
+                initial_settings = replace(self.settings, providers=list(self.settings.providers))
+                if guidance_change and self.settings.semantic_provider == "ollama":
+                    initial_settings.book_context = previous_key[2]
+                    previous_strength = getattr(state.topic, "guidance_strength", None)
+                    initial_settings.book_guidance_strength = .65 if previous_strength is None else previous_strength
                 analyzer = build_analyzer(
-                    self.settings, stop_event=self.stop_event,
+                    initial_settings, stop_event=self.stop_event,
                     on_status=lambda message: self._emit_context("updating", message))
                 if matching and self.settings.semantic_provider == "ollama":
                     restore = getattr(analyzer, "restore_checkpoint", None)
@@ -492,6 +603,16 @@ class Pipeline:
                             restored = restore(checkpoint, list(state.segments)) is True
                         except Exception as exc:
                             log.warning("Local story checkpoint restore failed (%s)", type(exc).__name__)
+                    if guidance_change and restored:
+                        from .book_guidance import refresh_guidance
+                        try:
+                            analyzer.update_book_guidance(self.settings.book_context, self.settings.book_guidance_strength)
+                            state.analyzer_checkpoint = analyzer.export_checkpoint()
+                        except Exception as exc:
+                            state.analyzer_checkpoint = None
+                            log.warning("Saved book guidance waits for a new passage (%s)", type(exc).__name__)
+                        if state.topic:
+                            state.topic = refresh_guidance(state.topic, self.settings)
                     if not restored:
                         # A rejected checkpoint is derived data only: the full
                         # recorded transcript remains available for re-reading.
@@ -502,7 +623,14 @@ class Pipeline:
                         state.playback_scope = None
                         state.analyzer_checkpoint = None
                 state.analyzer = analyzer
-                self._latest_topic = state.topic
+                from .book_guidance import guidance_seed, snapshot_guidance
+                self._latest_topic = snapshot_guidance(state.topic, self.settings) if state.topic else None
+                if self._latest_topic is not state.topic:
+                    state.topic = self._latest_topic
+                    changed = True
+                if not self._latest_topic and self._loop is not None:
+                    self._latest_topic = state.topic = guidance_seed(self.settings,
+                        (segment.text for segment in state.segments))
                 return analyzer
         finally:
             if changed:
@@ -523,6 +651,10 @@ class Pipeline:
         try:
             if self.stop_event.is_set():
                 return None
+            update = getattr(analyzer, "update_book_guidance", None)
+            if callable(update) and (analyzer.settings.book_context, analyzer.settings.book_guidance_strength) != (
+                    self.settings.book_context, self.settings.book_guidance_strength):
+                update(self.settings.book_context, self.settings.book_guidance_strength)
             bind = getattr(analyzer, "bind", None)
             if bind:
                 bind(self.stop_event, lambda message: self._emit_context("updating", message))
@@ -609,7 +741,7 @@ class Pipeline:
                                  and self._image_filter_match(image)[0]
                                  and not is_duplicate(image.phash, seen_hashes)}
 
-    def _emit_context(self, phase, message, playback_changed=False, retaining=False):
+    def _emit_context(self, phase, message, playback_changed=False, retaining=False, guidance_ack=False):
         with self._segments_lock:
             recorded = len(self._segments)
         topic = self._latest_topic
@@ -627,7 +759,10 @@ class Pipeline:
                               "model": getattr(self.settings, "context_model", "")
                               if self.settings.semantic_provider == "ollama" else "",
                               "method": self.settings.semantic_provider,
-                              "summary_method": getattr(analyzer, "summary_method", ""), "message": message})
+                              "summary_method": getattr(analyzer, "summary_method", ""), "message": message,
+                              **({"book_context": self.settings.book_context,
+                                  "book_guidance_strength": self.settings.book_guidance_strength,
+                                  "guidance_revision": self.session_state.guidance_revision} if guidance_ack else {})})
 
     async def _search(self, providers, downloader, ranker, cache):
         while not self.stop_event.is_set():
@@ -657,7 +792,9 @@ class Pipeline:
             self._sync_image_pool(topic)
             if len(self._approved_images) >= self.settings.prefetch_count:
                 continue
-            query = sanitize_query(topic.query)
+            from .book_guidance import guided_queries
+            guided = guided_queries(topic, self.settings)
+            query = guided[0] if guided else sanitize_query(topic.query)
             query_basis = topic
             is_fallback = False
             tried = {query.casefold()}
@@ -714,7 +851,10 @@ class Pipeline:
                 basis = self._latest_topic or topic
                 if not basis.query:
                     break
-                alternatives = [sanitize_query(q) for q in fallback_queries(basis)]
+                alternatives = guided_queries(basis, self.settings)[1:]
+                for alternative in fallback_queries(basis):
+                    alternatives.extend(guided_queries(replace(basis, query=alternative), self.settings))
+                alternatives = [sanitize_query(q) for q in alternatives]
                 alternatives = [q for q in alternatives if q and q.casefold() not in tried]
                 if not alternatives:
                     break
@@ -976,12 +1116,16 @@ class Pipeline:
 
     async def _query_candidates(self, query, providers, cache, page=0, refresh=False):
         from .temporal_filter import filter_identity, search_hints
+        from .book_guidance import guidance_identity
         revision = self._image_filter_revision
         self._last_query_failed = False
         self._last_query_incomplete = False
         self._last_query_all_paused = False
         self._last_query_succeeded = False
         identity = [query.casefold(), self.settings.providers, self.settings.results_per_provider]
+        guidance = guidance_identity(self._latest_topic or Topic(query, ""), self.settings)
+        if guidance:
+            identity.append({"book_guidance": guidance})
         if self.settings.time_filter_enabled or not self.settings.exclude_ai_generated:
             identity.append({"time_filter": filter_identity(self.settings),
                              "exclude_ai_generated": self.settings.exclude_ai_generated})

@@ -31,6 +31,9 @@ class Topic:
     transcript: tuple[str, ...] = ()
     context_used_segments: int = 0
     visual_update: str = "replace"
+    image_guidance: str | None = None
+    guidance_strength: float | None = None
+    guidance_only: bool = False
 
 
 @dataclass
