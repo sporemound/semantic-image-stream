@@ -14,6 +14,8 @@ Dependency/model/image licenses are independent. This table is an orientation ai
 | DDGS | MIT; remote search-service terms remain separate |
 | Transformers | Apache-2.0 |
 | PyTorch | BSD-family with bundled third-party notices |
+| Optional Ollama local runtime | [MIT](https://github.com/ollama/ollama/blob/main/LICENSE); installed separately and not bundled |
+| Default Qwen2.5-7B-Instruct narrative weights | [Apache-2.0 model card](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct); manually cached separately and not bundled |
 | OpenAI Whisper weights; optional CLIP weights | Check the selected model card and model license. Defaults use MIT-licensed upstream OpenAI models. |
 | Retrieved images | Their individual source licenses, never the application's MIT license. Attribution JSON preserves reported reuse metadata; unknown licenses remain unknown. |
 

@@ -194,3 +194,45 @@ def test_only_cache_miss_enables_initial_download(monkeypatch):
     assert FasterWhisperTranscriber(Settings(whisper_device="cpu"), on_status=statuses.append).transcribe(_chunk())
     assert options == [True, False]
     assert any("Downloading Whisper" in status for status in statuses)
+
+
+def decode_segments(decoded):
+    transcriber = FasterWhisperTranscriber(Settings(whisper_device="cpu"))
+    transcriber._model = types.SimpleNamespace(
+        transcribe=lambda samples, **kwargs: (iter(decoded), types.SimpleNamespace(language="en")))
+    transcriber.device = "cpu"
+    return transcriber.transcribe(_chunk())
+
+
+def test_hallucinated_out_of_chunk_repeats_are_not_clamped_to_chunk_end():
+    decoded = [_segment("The door opened.", 0.1, 0.7)]
+    decoded.extend(_segment("The door.", 1 + index * 0.2, 1.2 + index * 0.2) for index in range(25))
+    result = decode_segments(decoded)
+    assert [segment.text for segment in result] == ["The door opened."]
+    assert all(segment.end > segment.start for segment in result)
+
+
+@pytest.mark.parametrize("start,end", [
+    (0.2, 0.2), (0.8, 0.1), (-0.8, -0.1), (1, 2),
+    (float("nan"), 0.5), (0.1, float("inf")), (float("-inf"), 0.5), (None, 0.5),
+])
+def test_invalid_or_nonpositive_decoded_intervals_are_ignored(start, end):
+    result = decode_segments([_segment("Invalid decoder output", start, end), _segment("Real speech", 0.2, 0.8)])
+    assert [segment.text for segment in result] == ["Real speech"]
+
+
+def test_exact_overlapping_repeats_are_removed_but_distinct_utterances_remain():
+    result = decode_segments([
+        _segment("The door.", 0.1, 0.3),
+        _segment("The door.", 0.1, 0.3),
+        _segment("The door.", 0.2, 0.35),
+        _segment("The door.", 0.4, 0.6),
+        _segment("The door.", 0.6, 0.8),
+    ])
+    assert len(result) == 3
+    assert [(segment.start, segment.end) for segment in result] == [(12.1, 12.3), (12.4, 12.6), (12.6, 12.8)]
+
+
+def test_partially_overlapping_audio_boundaries_preserve_real_speech():
+    result = decode_segments([_segment("Opening words", -0.1, 0.2), _segment("Closing words", 0.8, 1.2)])
+    assert [(segment.start, segment.end) for segment in result] == [(12, 12.2), (12.8, 13)]

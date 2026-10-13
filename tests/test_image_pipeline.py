@@ -419,3 +419,133 @@ async def test_topic_change_while_fallback_is_ranked_rechecks_current_context(tm
         assert not any(kind == "images" for kind, _ in events)
     finally:
         cache.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unusable", ["invalid", "irrelevant"])
+async def test_raw_results_without_accepted_images_try_other_current_subjects(tmp_path, monkeypatch, unusable):
+    from semantic_image_stream.image_download import DownloadError
+
+    pipeline, cache, directory, events, ready = pipeline_fixture(tmp_path)
+    pipeline.settings.relevance_threshold = 0.40
+    topic = Topic("unhelpful narrated action", "The expedition is stranded in an Arctic snowstorm.",
+                  ("expedition", "Arctic"), "general", summary="An expedition searches for shelter.",
+                  scene="People stranded in Arctic snow", visual_subjects=("Arctic snow",),
+                  queries=("Arctic snow",), transcript=("The expedition arrived.", "A snowstorm stranded them."),
+                  context_used_segments=2)
+    pipeline._generation = 1
+    pipeline._latest_topic = topic
+    pipeline.topic_queue.put_nowait((1, topic))
+    monkeypatch.setattr("semantic_image_stream.engine.fallback_queries", lambda _: ["Arctic snow", "polar expedition"])
+    rejected = ImageCandidate("https://image.example/unusable", "https://source.example/file", "Sunflower", "wikimedia")
+    relevant = ImageCandidate("https://image.example/relevant", "https://source.example/file", "Arctic snow", "wikimedia")
+    provider = QueryProvider({topic.query: [rejected], "Arctic snow": [relevant]})
+
+    class FilteringDownloader(Downloader):
+        async def download(self, candidate):
+            if unusable == "invalid" and candidate.image_url.endswith("unusable"):
+                raise DownloadError("Bad source content", reason="Invalid image")
+            return await super().download(candidate)
+
+    class SubjectRanker:
+        name = "metadata"
+
+        def __init__(self):
+            self.topics = []
+
+        def rank(self, current, candidates, recent):
+            self.topics.append(current)
+            return [replace(candidate, score=0.9 if candidate.title == current.query else 0.15)
+                    for candidate in candidates]
+
+    ranker = SubjectRanker()
+    task = asyncio.create_task(pipeline._search([provider], FilteringDownloader(directory), ranker, cache))
+    try:
+        await asyncio.wait_for(ready.wait(), 2)
+        assert provider.queries == [topic.query, "Arctic snow"]
+        assert pipeline.settings.relevance_threshold == 0.40
+        assert ranker.topics[-1] == replace(topic, query="Arctic snow")
+        shown = next(images[0] for kind, images in events if kind == "images")
+        assert shown.image_url == relevant.image_url and shown.score >= 0.40
+        assert any(kind == "retrieval" and data["phase"] == "empty" for kind, data in events)
+        assert all(data["threshold"] == 0.40 for kind, data in events if kind == "retrieval")
+    finally:
+        await cleanup(task, pipeline, cache)
+
+
+@pytest.mark.asyncio
+async def test_unusable_raw_batches_exhaust_two_query_budget_without_repeating_failed_urls(tmp_path, monkeypatch):
+    from semantic_image_stream.image_download import DownloadError
+
+    pipeline, cache, directory, events, ready = pipeline_fixture(tmp_path)
+    topic = Topic("Arctic expedition", "An expedition lost in Arctic snow.")
+    pipeline._generation = 1
+    pipeline._latest_topic = topic
+    pipeline.topic_queue.put_nowait((1, topic))
+    monkeypatch.setattr("semantic_image_stream.engine.fallback_queries",
+                        lambda _: ["Arctic snow", "polar expedition", "third alternative"])
+    candidate = ImageCandidate("https://image.example/failed", "https://source.example/file", "Arctic expedition", "wikimedia")
+    provider = QueryProvider({query: [candidate] for query in [topic.query, "Arctic snow", "polar expedition", "third alternative"]})
+
+    class FailedDownloader(Downloader):
+        calls = 0
+
+        async def download(self, candidate):
+            self.calls += 1
+            raise DownloadError("Retry later", reason="Source temporarily rate-limited")
+
+    downloader = FailedDownloader(directory)
+    stop_on_empty(pipeline, monkeypatch)
+    try:
+        await asyncio.wait_for(pipeline._search([provider], downloader, MetadataRanker(), cache), 2)
+        assert provider.queries == [topic.query, "Arctic snow", "polar expedition"]
+        assert downloader.calls == 1
+        assert not ready.is_set() and not any(kind == "images" for kind, _ in events)
+        assert all(cache.get_query(query_key(pipeline, query)) for query in provider.queries), "Raw query results remain accurately cached"
+        assert cache.get_query(query_key(pipeline, "third alternative")) is None
+        empty = [data for kind, data in events if kind == "retrieval" and data["phase"] == "empty"]
+        assert len(empty) == 3 and all(data["accepted"] == 0 for data in empty)
+    finally:
+        cache.close()
+
+
+@pytest.mark.asyncio
+async def test_new_ungrounded_scene_never_approves_old_inflight_images(tmp_path, monkeypatch):
+    pipeline, cache, directory, events, ready = pipeline_fixture(tmp_path)
+    initial = Topic("Arctic camp", "The expedition camps in Arctic ice.")
+    ungrounded = Topic("", "All recorded context", summary="The passage is an abstract discussion.",
+                       context_used_segments=2, transcript=("The expedition camps.", "An abstract thought."))
+    pipeline._generation = 1
+    pipeline._latest_topic = initial
+    pipeline.topic_queue.put_nowait((1, initial))
+    release = asyncio.Event()
+    provider = Provider([ImageCandidate("https://image.example/fast", "https://source.example/file",
+                                        "Arctic camp", "wikimedia")], release)
+
+    def no_fallback(_):
+        raise AssertionError("No visual subject must never generate an alternative image search")
+
+    monkeypatch.setattr("semantic_image_stream.engine.fallback_queries", no_fallback)
+
+    class AlwaysAccept:
+        name = "context_clip"
+        model = object()
+        calls = 0
+
+        def rank(self, current, candidates, recent):
+            self.calls += 1
+            return [replace(candidate, score=0.99) for candidate in candidates]
+
+    ranker = AlwaysAccept()
+    stop_on_empty(pipeline, monkeypatch)
+    task = asyncio.create_task(pipeline._search([provider], Downloader(directory), ranker, cache))
+    try:
+        await asyncio.wait_for(provider.called.wait(), 2)
+        pipeline._generation = 2
+        pipeline._latest_topic = ungrounded
+        release.set()
+        await asyncio.wait_for(task, 2)
+        assert ranker.calls == 0
+        assert not ready.is_set() and not any(kind == "images" for kind, _ in events)
+    finally:
+        await cleanup(task, pipeline, cache)

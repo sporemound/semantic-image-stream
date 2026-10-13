@@ -339,9 +339,10 @@ def delayed_devices_window(app, monkeypatch, tmp_path):
             workers.append(self)
 
     class NoCapturePipeline:
-        def __init__(self, settings, callback):
+        def __init__(self, settings, callback, session_state=None):
             self.settings = settings
             self.callback = callback
+            self.session_state = session_state
             pipelines.append(self)
 
         def start(self):
@@ -590,8 +591,9 @@ def test_new_session_discards_old_topic_playback(window, image_factory, monkeypa
     from semantic_image_stream import engine
 
     class IdlePipeline:
-        def __init__(self, settings, callback):
+        def __init__(self, settings, callback, session_state=None):
             self.settings, self.callback = settings, callback
+            self.session_state = session_state
 
         def start(self):
             pass
@@ -634,7 +636,8 @@ def test_audiobook_preset_requires_apply_and_preserves_unsaved_input_choices(win
     assert chosen.transition == "zoom" and chosen.chunk_seconds == 8
     assert chosen.slideshow_interval == AUDIOBOOK_PRESETS["history"].slideshow_interval
     assert chosen.transcript_window_seconds == 120 and chosen.prefetch_count == 8
-    assert chosen.providers == ["wikimedia", "archive"] and chosen.ranking == "metadata"
+    assert chosen.providers == ["wikimedia", "archive"] and chosen.ranking == "context_clip"
+    assert chosen.semantic_provider == "ollama"
     assert not window.config_path.exists()
     window.save_settings()
     saved = Settings.load(window.config_path)
@@ -704,3 +707,206 @@ def test_decode_failed_image_is_not_replayed_and_preserves_displayed_frame(windo
     assert window.image_history.count() == len(recorded)
     assert bad not in window.slideshow._playlist.values()
     assert "Could not display image" not in window.image_status_label.text()
+
+
+def test_full_transcript_appends_after_160_lines_without_duplicates_or_rebuilds(window):
+    segments = [TranscriptSegment(index * 6, index * 6 + 5, f"Narration segment {index}.") for index in range(350)]
+    window._handle_event(0, "transcript", segments[:200])
+    assert window.transcript.document().blockCount() == 200
+    assert "Narration segment 0." in window.transcript.toPlainText()
+    changes = []
+    window.transcript.document().contentsChange.connect(lambda position, removed, added: changes.append((position, removed, added)))
+    original_length = len(window.transcript.toPlainText())
+    window._handle_event(0, "transcript", segments)
+    assert window.transcript.document().blockCount() == 350
+    assert changes and all(position >= original_length and removed == 0 for position, removed, _ in changes)
+    text = window.transcript.toPlainText()
+    changes.clear()
+    window._handle_event(0, "transcript", segments)
+    assert not changes and window.transcript.toPlainText() == text
+    assert text.count("Narration segment 0.") == 1
+    assert "350 awaiting context update" in window.context_status.text()
+    replacement = [TranscriptSegment(0, 5, "Different fixture transcript.")]
+    window._handle_event(0, "transcript", replacement)
+    assert window.transcript.document().blockCount() == 1
+    assert "Different fixture transcript." in window.transcript.toPlainText()
+
+
+@pytest.fixture
+def recording_context_pipeline(monkeypatch):
+    from semantic_image_stream import engine
+    instances = []
+
+    class NoCapturePipeline:
+        def __init__(self, settings, callback, session_state=None):
+            self.settings, self.callback, self.session_state = settings, callback, session_state
+            self.deleted_history = False
+            instances.append(self)
+
+        def start(self):
+            self.callback("transcript", list(self.session_state.segments))
+
+        def stop(self):
+            self.callback("stopped", None)
+
+        def clear_history(self):
+            self.deleted_history = True
+
+    monkeypatch.setattr(engine, "Pipeline", NoCapturePipeline)
+    return instances
+
+
+def test_stop_start_reuses_all_session_text_and_state(window, recording_context_pipeline):
+    window.start_monitoring()
+    first = recording_context_pipeline[-1]
+    first.session_state.segments.append(TranscriptSegment(0, 5, "The ship entered orbit."))
+    first.callback("transcript", list(first.session_state.segments))
+    first.callback("context", {"phase": "ready", "summary": "A spacecraft entered orbit.",
+                               "segments_used": 1, "segments_recorded": 1})
+    window.stop_monitoring()
+    assert not window._monitoring
+    window.start_monitoring()
+    second = recording_context_pipeline[-1]
+    assert first is not second and first.session_state is second.session_state is window._session_state
+    assert "A spacecraft entered orbit." in window.context_text.toPlainText()
+    second.session_state.segments.append(TranscriptSegment(6, 11, "It deployed its antenna."))
+    second.callback("transcript", list(second.session_state.segments))
+    assert window.transcript.document().blockCount() == 2
+    assert window.transcript.toPlainText().count("The ship entered orbit.") == 1
+    assert "It deployed its antenna." in window.transcript.toPlainText()
+
+
+def test_new_book_clears_local_context_and_seed_and_rejects_prior_events(window, recording_context_pipeline):
+    window.book_context.setText("Example book background")
+    window.start_monitoring()
+    previous = recording_context_pipeline[-1]
+    previous.session_state.segments.append(TranscriptSegment(0, 5, "An old book scene."))
+    previous.callback("transcript", list(previous.session_state.segments))
+    previous.callback("context", {"phase": "ready", "summary": "Old interpretation.", "segments_used": 1})
+    window.stop_monitoring()
+    window.new_book()
+    assert window.book_context.text() == "" and window.settings.book_context == ""
+    assert window._session_state is None and window.pipeline is None
+    assert not window.transcript.toPlainText() and not window.context_text.toPlainText()
+    assert not window._transcript_segments and not window._context_payload
+    assert "cleared locally" in window.status_label.text()
+    previous.callback("transcript", list(previous.session_state.segments))
+    assert not window.transcript.toPlainText()
+    window.start_monitoring()
+    assert recording_context_pipeline[-1].session_state is not previous.session_state
+    assert not recording_context_pipeline[-1].session_state.segments
+
+
+def test_changing_book_seed_starts_a_fresh_explained_context(window, recording_context_pipeline):
+    window.start_monitoring()
+    previous = recording_context_pipeline[-1]
+    previous.session_state.segments.append(TranscriptSegment(0, 5, "Previous context."))
+    previous.callback("transcript", list(previous.session_state.segments))
+    window.stop_monitoring()
+    window.book_context.setText("A new historical book")
+    window.start_monitoring()
+    current = recording_context_pipeline[-1]
+    assert current.session_state is not previous.session_state
+    assert current.settings.book_context == "A new historical book"
+    assert not window.transcript.toPlainText()
+    assert "Book/context changed" in window.status_label.text()
+
+
+def test_delete_history_also_resets_all_local_context(window, recording_context_pipeline):
+    window.start_monitoring()
+    previous = recording_context_pipeline[-1]
+    previous.session_state.segments.append(TranscriptSegment(0, 5, "Recorded locally."))
+    previous.callback("transcript", list(previous.session_state.segments))
+    window.stop_monitoring()
+    window.clear_history()
+    assert previous.deleted_history
+    assert window._session_state is None and not window._transcript_segments
+    assert not window.transcript.toPlainText() and not window.context_text.toPlainText()
+
+
+def test_context_panel_shows_full_coverage_backlog_and_model_error_without_stopping_audio(window):
+    segments = [TranscriptSegment(index * 6, index * 6 + 5, f"Narration {index}") for index in range(5)]
+    window._monitoring = True
+    window._handle_event(0, "transcript", segments)
+    window._handle_event(0, "context", {"phase": "ready", "summary": "A secret reconnaissance mission.",
+                                      "scene": "A spacecraft passes over Earth.", "visual_subjects": ["reconnaissance satellite"],
+                                      "segments_used": 3, "segments_recorded": 5, "method": "ollama", "model": "qwen2.5:7b"})
+    assert "Using 3 of 5 recorded segments" in window.context_status.text()
+    assert "2 awaiting context update" in window.context_status.text()
+    assert "qwen2.5:7b" in window.context_status.text()
+    assert "A secret reconnaissance mission." in window.context_text.toPlainText()
+    assert "reconnaissance satellite" in window.context_text.toPlainText()
+    window._handle_event(0, "context", {"phase": "error", "message": "The local model is unavailable."})
+    assert window._monitoring
+    assert "local model is unavailable" in window.context_status.text()
+    assert window.tabs.tabText(window._context_tab_index) == "Context · error"
+    assert "A secret reconnaissance mission." in window.context_text.toPlainText()
+    window._handle_event(0, "context", {"phase": "ready", "message": "", "segments_used": 5})
+    assert "Using 5 recorded segments · full session" in window.context_status.text()
+    assert window.tabs.tabText(window._context_tab_index) == "Context"
+    window._monitoring = False
+
+
+def test_context_changes_even_when_search_query_stays_the_same(window):
+    first = Topic("reconnaissance satellite", "First narrative", summary="The satellite is launched.",
+                  scene="Launch from a coastal site.", visual_subjects=("launch vehicle",), context_used_segments=1)
+    second = Topic("reconnaissance satellite", "Further narrative", summary="The satellite is now in orbit.",
+                   scene="Earth seen from orbit.", visual_subjects=("Earth from orbit",), context_used_segments=2)
+    window._handle_event(0, "topic", first)
+    window._handle_event(0, "topic", second)
+    assert window.topic_history.count() == 1
+    assert "The satellite is now in orbit." in window.context_text.toPlainText()
+    assert "Earth seen from orbit." in window.context_text.toPlainText()
+    assert "launch vehicle" not in window.context_text.toPlainText()
+
+
+def test_context_controls_persist_and_are_disabled_during_capture(window, tmp_path):
+    window.config_path = tmp_path / "context.toml"
+    window.interpreter.setCurrentIndex(window.interpreter.findData("ollama"))
+    assert window.context_model.isEnabled()
+    window.context_model.setText("qwen2.5:14b")
+    window.book_context.setText("A book about a historical space program")
+    window.ranking.setCurrentIndex(window.ranking.findData("context_clip"))
+    window.save_settings()
+    saved = Settings.load(window.config_path)
+    assert saved.semantic_provider == "ollama" and saved.context_model == "qwen2.5:14b"
+    assert saved.book_context == "A book about a historical space program" and saved.ranking == "context_clip"
+    for monitoring, stopping in ((True, False), (False, True)):
+        window._monitoring, window._stopping = monitoring, stopping
+        window._update_controls()
+        assert not window.interpreter.isEnabled() and not window.context_model.isEnabled()
+        assert not window.book_context.isEnabled() and not window.new_book_button.isEnabled()
+        window.new_book()
+        assert window.book_context.text() == saved.book_context
+    window._monitoring = window._stopping = False
+    window._update_controls()
+    assert window.interpreter.isEnabled() and window.context_model.isEnabled()
+    window.interpreter.setCurrentIndex(window.interpreter.findData("contextual"))
+    assert not window.context_model.isEnabled() and window.book_context.isEnabled()
+
+
+def test_significant_scene_key_clears_same_query_playback_without_summary_churn(window, image_factory):
+    first, second, third = image_factory(), image_factory("blue", "blue"), image_factory("green", "green")
+    window._handle_event(0, "context", {"phase": "ready", "summary": "A satellite launch.",
+                                      "scene": "A rocket lifts off.", "visual_subjects": ["rocket launch"],
+                                      "segments_used": 2, "segments_recorded": 2, "playback_key": 1})
+    window._handle_event(0, "topic", Topic("reconnaissance satellite", "Launch narrative"))
+    window._handle_event(0, "images", [first, second])
+    assert list(window.slideshow.pending) == [second] and window.slideshow.replay_count == 2
+    window._handle_event(0, "context", {"phase": "ready", "summary": "The mission begins with a launch.",
+                                      "scene": "The launch vehicle takes off.", "visual_subjects": ["rocket launch"],
+                                      "segments_used": 3, "segments_recorded": 3, "playback_key": 1})
+    assert list(window.slideshow.pending) == [second] and window.slideshow.replay_count == 2
+    window._handle_event(0, "context", {"phase": "ready", "summary": "The same mission continues in orbit.",
+                                      "scene": "Earth viewed from orbit.", "visual_subjects": ["Earth from orbit"],
+                                      "segments_used": 4, "segments_recorded": 4, "playback_key": 2})
+    assert window.current_topic == "reconnaissance satellite"
+    assert window.slideshow.current is first
+    assert not window.slideshow.pending and window.slideshow.replay_count == 0
+    window.slideshow.advance()
+    assert window.slideshow.current is first
+    window._handle_event(0, "images", [third])
+    window._handle_event(0, "images", [third, first])
+    assert list(window.slideshow.pending) == [third, first]
+    window.next_image()
+    assert window.slideshow.current is third

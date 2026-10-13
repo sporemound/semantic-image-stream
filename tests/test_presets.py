@@ -21,6 +21,8 @@ def test_audiobook_profile_preserves_working_audio_and_model_choices(tmp_path, k
                   "clip_model", "clip_device", "attribution_visible", "display_index", "transition"):
         assert getattr(profile, field) == getattr(original, field)
     assert profile.transcript_window_seconds > original.transcript_window_seconds
+    assert profile.semantic_provider == "ollama"
+    assert profile.ranking == "context_clip"
     profile.providers.append("duckduckgo")
     assert original.providers == before["providers"]
     assert "duckduckgo" not in AUDIOBOOK_PRESETS[key].providers

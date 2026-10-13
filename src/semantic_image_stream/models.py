@@ -24,6 +24,12 @@ class Topic:
     context: str
     concepts: tuple[str, ...] = ()
     kind: str = "general"
+    summary: str = ""
+    scene: str = ""
+    visual_subjects: tuple[str, ...] = ()
+    queries: tuple[str, ...] = ()
+    transcript: tuple[str, ...] = ()
+    context_used_segments: int = 0
 
 
 @dataclass

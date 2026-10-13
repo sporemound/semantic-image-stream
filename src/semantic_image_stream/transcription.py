@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import gc
 import logging
+import math
 from pathlib import Path
 import threading
 
@@ -123,13 +124,30 @@ class FasterWhisperTranscriber:
             temperature=0.0,
         )
         result = []
+        seen_spans = {}
         duration = len(samples) / 16000
         for segment in segments:
             self._check_cancel()
             text = " ".join(segment.text.split())
             if text:
-                start = max(0.0, min(duration, float(segment.start)))
-                end = max(start, min(duration, float(segment.end)))
+                try:
+                    decoded_start, decoded_end = float(segment.start), float(segment.end)
+                except (TypeError, ValueError):
+                    continue
+                if (not math.isfinite(decoded_start) or not math.isfinite(decoded_end)
+                        or decoded_end <= decoded_start or decoded_end <= 0 or decoded_start >= duration):
+                    continue
+                # Decode loops can hallucinate timestamps beyond this chunk.
+                # Keep only a real positive audio interval, never clamp such
+                # segments into repeated zero-duration lines at the chunk end.
+                start = max(0.0, decoded_start)
+                end = min(duration, decoded_end)
+                if end <= start:
+                    continue
+                spans = seen_spans.setdefault(text, [])
+                if any(start < previous_end and end > previous_start for previous_start, previous_end in spans):
+                    continue
+                spans.append((start, end))
                 result.append(TranscriptSegment(chunk.start + start, chunk.start + end, text,
                                                 getattr(info, "language", "") or ""))
         self._check_cancel()

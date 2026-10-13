@@ -31,6 +31,10 @@ class Settings:
     semantic_sensitivity: float = 0.45
     relevance_threshold: float = 0.30
     semantic_provider: str = "contextual"
+    context_model: str = "qwen2.5:7b"
+    book_context: str = ""
+    context_cpu_threads: int = 6
+    context_timeout: float = 180.0
     providers: list[str] = field(default_factory=lambda: ["wikimedia"])
     results_per_provider: int = 10
     prefetch_count: int = 6
@@ -60,8 +64,8 @@ class Settings:
         self.cache_dir = str(Path(os.path.expandvars(self.cache_dir)).expanduser().resolve())
         enums = {"audio_mode": {"loopback", "microphone", "file"},
                  "whisper_device": {"auto", "cuda", "cpu"},
-                 "ranking": {"metadata", "clip"},
-                 "semantic_provider": {"contextual", "spacy"},
+                 "ranking": {"metadata", "clip", "context_clip"},
+                 "semantic_provider": {"contextual", "spacy", "ollama"},
                  "transition": {"crossfade", "dissolve", "zoom", "cut"},
                  "clip_device": {"cpu", "cuda"}}
         for key, choices in enums.items():
@@ -69,12 +73,12 @@ class Settings:
                 raise ValueError(f"{key} must be one of {sorted(choices)}")
         for key in ("chunk_seconds", "silence_seconds", "transcript_window_seconds",
                     "semantic_interval", "search_interval", "slideshow_interval",
-                    "download_timeout", "cache_ttl_hours"):
+                    "download_timeout", "cache_ttl_hours", "context_timeout"):
             if (not isinstance(getattr(self, key), (float, int))
                     or not math.isfinite(getattr(self, key)) or getattr(self, key) <= 0):
                 raise ValueError(f"{key} must be positive")
         for key in ("audio_queue_size", "results_per_provider", "prefetch_count", "min_width",
-                    "min_height", "max_download_bytes", "max_image_pixels", "cache_max_mb", "history_limit"):
+                    "min_height", "max_download_bytes", "max_image_pixels", "cache_max_mb", "history_limit", "context_cpu_threads"):
             if not isinstance(getattr(self, key), int) or isinstance(getattr(self, key), bool) or getattr(self, key) <= 0:
                 raise ValueError(f"{key} must be a positive integer")
         if self.chunk_seconds > 30 or self.audio_queue_size > 64:
@@ -96,6 +100,14 @@ class Settings:
             raise ValueError("display_index must be a nonnegative integer")
         if not isinstance(self.whisper_model, str) or not self.whisper_model.strip():
             raise ValueError("whisper_model must be a nonempty model name or path")
+        if (not isinstance(self.context_model, str) or not self.context_model.strip()
+                or len(self.context_model) > 120 or any(c.isspace() for c in self.context_model)
+                or any(token in self.context_model.lower() for token in (":cloud", "://", "\\", ".."))):
+            raise ValueError("context_model must name a local installed model")
+        if not isinstance(self.book_context, str) or len(self.book_context) > 2000:
+            raise ValueError("book_context must contain at most 2000 characters")
+        if self.context_cpu_threads > 32:
+            raise ValueError("context_cpu_threads must be at most 32")
         return self
 
     @classmethod

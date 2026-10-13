@@ -1,11 +1,12 @@
 """Independent, bounded capture/transcription/semantic/search clocks."""
 from collections import Counter, deque
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 import asyncio
 import json
 import logging
 import queue
+import re
 import shutil
 import threading
 import time
@@ -13,10 +14,26 @@ import time
 from .cache import Cache
 from .image_ranking import build_ranker, is_duplicate
 from .models import ImageCandidate
-from .semantic_analysis import TopicGate, build_analyzer, fallback_queries, sanitize_query
+from .semantic_analysis import TopicGate, build_analyzer, fallback_queries, sanitize_query, tokens
 
 log = logging.getLogger(__name__)
 GPU_LOCK = threading.Lock()
+
+
+@dataclass
+class SessionState:
+    """In-memory story context shared by successive monitoring runs."""
+    segments: list = field(default_factory=list)
+    lock: threading.RLock = field(default_factory=threading.RLock)
+    analysis_lock: threading.Lock = field(default_factory=threading.Lock)
+    analyzer: object | None = None
+    provider_key: tuple = ()
+    topic: object | None = None
+    playback_scope: tuple | None = None
+    playback_generation: int = 0
+
+
+PipelineSessionState = SessionState
 
 
 async def _background(function, *args):
@@ -69,7 +86,7 @@ def export_image(candidate: ImageCandidate, destination: str | Path) -> tuple[Pa
 
 
 class Pipeline:
-    def __init__(self, settings, on_event):
+    def __init__(self, settings, on_event, session_state=None):
         # Runtime receives a snapshot, so changing controls never races workers.
         self.settings = replace(settings, providers=list(settings.providers)).validate()
         self.on_event = on_event
@@ -77,14 +94,15 @@ class Pipeline:
         self._thread = None
         self._capture = None
         self._transcriber = None
-        self._segments = deque(maxlen=300)
-        self._segments_lock = threading.Lock()
+        self.session_state = session_state if session_state is not None else SessionState()
+        self._segments = self.session_state.segments
+        self._segments_lock = self.session_state.lock
         self._recent_hashes = deque(maxlen=100)
         self._protected_paths = deque(maxlen=120)
         self._history_lock = threading.Lock()
         self._generation = 0
         self._last_search = 0.0
-        self._latest_topic = None
+        self._latest_topic = self.session_state.topic
 
     @property
     def running(self):
@@ -100,7 +118,6 @@ class Pipeline:
         if self.running:
             return
         self.stop_event.clear()
-        self._segments.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name="sis-pipeline")
         self._thread.start()
 
@@ -133,13 +150,27 @@ class Pipeline:
         self._capture = create_capture(self.settings)
         self._transcriber = FasterWhisperTranscriber(self.settings, GPU_LOCK, self.stop_event,
                                                     lambda message: self.emit("status", message))
-        analyzer = build_analyzer(self.settings)
+        try:
+            analyzer = self._session_analyzer()
+        except Exception as exc:
+            analyzer = None
+            self._report_context_failure(exc)
         ranker = build_ranker(self.settings, GPU_LOCK)
         providers = build_providers(self.settings)
         cache = Cache(self.settings)
         downloader = ImageDownloader(self.settings)
         self._cache = cache
         self.capture_done = False
+        with self._segments_lock:
+            capture_offset = max((segment.end for segment in self._segments), default=0.0)
+            previous_segments = list(self._segments)
+        if previous_segments:
+            self.emit("transcript", previous_segments)
+        if self._latest_topic:
+            self._emit_context("ready", "Retained story context is ready.")
+            self.emit("topic", self._latest_topic)
+            if self._latest_topic.query:
+                self.topic_queue.put_nowait((self._generation, self._latest_topic))
 
         def on_chunk(chunk):
             if self.stop_event.is_set():
@@ -151,7 +182,9 @@ class Pipeline:
                     pass
                 self.emit("status", "Transcription is behind playback; dropped the oldest audio chunk.")
             try:
-                self.audio_queue.put_nowait(chunk)
+                # A restarted device begins at zero, while the retained story
+                # transcript must keep a stable, increasing session timeline.
+                self.audio_queue.put_nowait(replace(chunk, start=chunk.start + capture_offset))
             except queue.Full:
                 pass
 
@@ -205,9 +238,6 @@ class Pipeline:
             if segments:
                 with self._segments_lock:
                     self._segments.extend(segments)
-                    cutoff = segments[-1].end - self.settings.transcript_window_seconds
-                    while self._segments and self._segments[0].end < cutoff:
-                        self._segments.popleft()
                     window = list(self._segments)
                 self.emit("transcript", window)
                 self.emit("status", "Spoken context updated · listening")
@@ -216,22 +246,148 @@ class Pipeline:
 
     async def _interpret(self, analyzer):
         gate = TopicGate(self.settings.semantic_sensitivity)
-        last_end = -1
+        if self._latest_topic:
+            gate.accept(self._latest_topic)
+        last_count = -1
+        failed_count = -1
+        retry_at = 0.0
         while not self.stop_event.is_set():
             with self._segments_lock:
                 window = list(self._segments)
-            if window and window[-1].end != last_end:
-                last_end = window[-1].end
-                topic = await _background(analyzer.analyze, window)
-                if topic and gate.changed(topic):
+            count = len(window)
+            if (window and count != last_count
+                    and (count != failed_count or time.monotonic() >= retry_at)):
+                self._emit_context("updating", "Updating local story understanding from all recorded text.")
+                topic, changed = None, False
+                try:
+                    if analyzer is None:
+                        analyzer = self._session_analyzer()
+                    topic = await _background(self._analyze_session, analyzer, window)
+                except Exception as exc:
+                    if self.stop_event.is_set():
+                        break
+                    # Recognition and capture remain independent of the local
+                    # context model. No transcript/query is included in logs.
+                    self._report_context_failure(exc)
+                    failed_count = count
+                    retry_at = time.monotonic() + max(5.0, self.settings.semantic_interval)
+                else:
+                    if self.stop_event.is_set():
+                        break
+                    last_count = count
+                    failed_count = -1
+                    if topic:
+                        topic = replace(topic, transcript=tuple(segment.text for segment in window))
+                        playback_changed = self._update_playback_scope(topic)
+                        changed = gate.changed(topic) or playback_changed
+                        # Every successful context update affects in-flight
+                        # ranking, even if its compact search query is stable.
+                        self._latest_topic = topic
+                        self.session_state.topic = topic
+                        message = ("Local story understanding updated." if topic.query else
+                                   "No grounded visual subject in this passage yet.")
+                        self._emit_context("ready", message, playback_changed=playback_changed)
+                    else:
+                        changed = False
+                if topic and failed_count == -1 and changed:
                     self._latest_topic = topic
                     self._generation += 1
                     gate.accept(topic)
                     self.emit("topic", topic)
-                    if self.topic_queue.full():
+                    while not self.topic_queue.empty():
                         self.topic_queue.get_nowait()
-                    self.topic_queue.put_nowait((self._generation, topic))
+                    if topic.query:
+                        self.topic_queue.put_nowait((self._generation, topic))
             await asyncio.sleep(self.settings.semantic_interval)
+
+    def _session_analyzer(self):
+        key = (self.settings.semantic_provider, getattr(self.settings, "context_model", ""),
+               getattr(self.settings, "book_context", ""))
+        with self._segments_lock:
+            if self.session_state.analyzer is None or self.session_state.provider_key != key:
+                if self.session_state.provider_key and self.session_state.provider_key != key:
+                    self.session_state.playback_generation += 1
+                self.session_state.topic = None
+                self._latest_topic = None
+                self.session_state.playback_scope = None
+                self.session_state.provider_key = key
+                self.session_state.analyzer = None
+                self.session_state.analyzer = build_analyzer(
+                    self.settings, stop_event=self.stop_event,
+                    on_status=lambda message: self._emit_context("updating", message))
+            return self.session_state.analyzer
+
+    def _analyze_session(self, analyzer, segments):
+        # Native/local HTTP work can briefly outlive a cancelled asyncio task.
+        # Serialize reuse and only rebind callbacks after that work has ended.
+        while not self.stop_event.is_set():
+            if self.session_state.analysis_lock.acquire(timeout=0.1):
+                break
+        else:
+            return None
+        try:
+            if self.stop_event.is_set():
+                return None
+            bind = getattr(analyzer, "bind", None)
+            if bind:
+                bind(self.stop_event, lambda message: self._emit_context("updating", message))
+            if self.settings.semantic_provider == "ollama":
+                return analyzer.analyze(segments, self.stop_event)
+            return analyzer.analyze(segments)
+        finally:
+            self.session_state.analysis_lock.release()
+
+    def _report_context_failure(self, error):
+        from .narrative_context import NarrativeContextError
+        log.warning("Story understanding failed (%s)", type(error).__name__)
+        detail = str(error) if isinstance(error, NarrativeContextError) else f"Local story understanding failed ({type(error).__name__})."
+        self._emit_context("error", f"{detail} Speech recording continues; context will retry.")
+
+    def _update_playback_scope(self, topic):
+        subjects = frozenset(tokens(" ".join(topic.visual_subjects or (topic.query,))))
+        scene = frozenset(tokens(topic.scene))
+        # Content-token distance drops function words, including negation.
+        # Preserve basic visual polarity without treating paraphrase as a scene.
+        visual = " ".join((topic.scene, *topic.visual_subjects)).casefold()
+        visual = re.sub(r"\b(?:not|never)\s+(?:open|opens|opened|opening)\b", "closed", visual)
+        visual = re.sub(r"\b(?:not|never)\s+(?:closed|closes|closing|shut)\b", "open", visual)
+        polarity = frozenset(label for label, pattern in (
+            ("negated", r"\b(?:no|not|without|never)\b|n't\b"),
+            ("open", r"\b(?:open|opens|opened|opening)\b"),
+            ("closed", r"\b(?:closed|closes|closing|shut)\b"),
+        ) if re.search(pattern, visual))
+        scope = (bool(topic.query), subjects, scene, polarity)
+        previous = self.session_state.playback_scope
+
+        def distance(first, second):
+            return 1 - len(first & second) / max(1, len(first | second))
+
+        changed = (previous is None or previous[0] != scope[0]
+                   or (scope[0] and (distance(previous[1], subjects) >= 0.5
+                                     or (scene and previous[2] and distance(previous[2], scene) >= 0.6)
+                                     or (previous[3] if len(previous) > 3 else frozenset()) != polarity)))
+        if changed:
+            self.session_state.playback_scope = scope
+            self.session_state.playback_generation += 1
+        return changed
+
+    def _emit_context(self, phase, message, playback_changed=False):
+        with self._segments_lock:
+            recorded = len(self._segments)
+        topic = self._latest_topic
+        analyzer = self.session_state.analyzer
+        used = getattr(analyzer, "context_used_segments", getattr(topic, "context_used_segments", 0))
+        self.emit("context", {"phase": phase, "summary": getattr(topic, "summary", ""),
+                              "scene": getattr(topic, "scene", ""),
+                              "visual_subjects": list(getattr(topic, "visual_subjects", ())),
+                              "segments_used": used,
+                              "segments_recorded": recorded,
+                              "playback_key": f"scene:{self.session_state.playback_generation}",
+                              "playback_changed": playback_changed,
+                              "model": getattr(self.settings, "context_model", "")
+                              if self.settings.semantic_provider == "ollama" else "",
+                              "method": self.settings.semantic_provider,
+                              "summary_method": getattr(analyzer, "summary_method", ""), "message": message})
 
     async def _search(self, providers, downloader, ranker, cache):
         while not self.stop_event.is_set():
@@ -244,179 +400,191 @@ class Pipeline:
                 generation, topic = self.topic_queue.get_nowait()
             self._last_search = time.monotonic()
             query = sanitize_query(topic.query)
-            candidates = await self._query_candidates(query, providers, cache)
-            fallback_topic, fallback_query = None, None
+            query_basis = topic
+            is_fallback = False
             tried = {query.casefold()}
             remaining = 2
-            while not candidates and remaining and not self.stop_event.is_set():
-                # Narration can produce an over-specific or mistranscribed
-                # primary query. Try only two shorter subjects from CURRENT
-                # speech, and stop as soon as a selected source has results.
+            rejected_urls = {}
+            published = False
+            ranking_failed = False
+            while not self.stop_event.is_set():
+                candidates = await self._query_candidates(query, providers, cache)
+                published, ranking_failed = await self._evaluate_candidates(
+                    topic, candidates, query_basis if is_fallback else None,
+                    query if is_fallback else None, downloader, ranker, cache, rejected_urls)
+                # Raw source hits are not usable matches. Try the remaining
+                # subjects only after validation/ranking exhausts this batch.
+                # A failed local ranker instead retains its explicit diagnostic.
+                if published or ranking_failed or not remaining:
+                    break
                 basis = self._latest_topic or topic
+                if not basis.query:
+                    break
                 alternatives = [sanitize_query(q) for q in fallback_queries(basis)]
                 alternatives = [q for q in alternatives if q and q.casefold() not in tried]
                 if not alternatives:
                     break
-                shorter = alternatives[0]
-                tried.add(shorter.casefold())
+                query = alternatives[0]
+                query_basis = basis
+                is_fallback = True
+                tried.add(query.casefold())
                 remaining -= 1
                 self.emit("retrieval", {"phase": "searching", "found": 0, "downloaded": 0,
                                         "rejected": 0, "accepted": 0,
                                         "threshold": self.settings.relevance_threshold,
                                         "best_score": None, "failures": {},
-                                        "message": "No matches yet; trying a shorter query from the current spoken context."})
-                candidates = await self._query_candidates(shorter, providers, cache)
-                if candidates:
-                    fallback_topic, fallback_query = basis, shorter
-
-            def ranking_topic():
-                current = self._latest_topic or topic
-                # Retain full context, concepts and kind, but score matches to
-                # the shorter subject that actually found them. Once speech
-                # changes, obsolete fallback wording must not bless old images.
-                effective = replace(current, query=fallback_query) if current is fallback_topic else current
-                return current, effective
-
-            by_url = {}
-            for candidate in candidates:
-                by_url.setdefault(candidate.image_url, candidate)
-            unique = list(by_url.values())
-            # Rank metadata before prefetch to start with promising source
-            # images; retain other candidates for actual multimodal ranking.
-            if ranker.name == "metadata":
-                try:
-                    preferred = ranker.rank(ranking_topic()[1], unique, [])
-                except Exception as exc:
-                    self._report_ranking_failure(ranker, exc, len(unique), 0)
-                    await self._wait_for_search_retry(generation, topic)
-                    continue
-                preferred_urls = {c.image_url for c in preferred}
-                unique = preferred + [c for c in unique if c.image_url not in preferred_urls]
-            semaphore = asyncio.Semaphore(3)
-            downloaded = 0
-            failures = Counter()
-            published = set()
-            last_selection = ()
-
-            def report(phase, accepted=0, best_score=None):
-                if phase == "ready":
-                    message = f"{accepted} relevant images ready · {downloaded} downloaded from {len(unique)} results"
-                elif phase == "empty":
-                    if not unique:
-                        message = "No images found for this topic. Waiting for the next subject or retry."
-                    elif not downloaded:
-                        details = "; ".join(f"{count} {reason.lower()}" for reason, count in failures.items())
-                        message = f"Found {len(unique)} results, but no images could be downloaded. {details}"
-                    elif best_score is not None and best_score < self.settings.relevance_threshold:
-                        message = (f"Downloaded {downloaded} images. Best relevance {best_score:.2f} is below "
-                                   f"the {self.settings.relevance_threshold:.2f} minimum.")
-                    else:
-                        message = f"Downloaded {downloaded} images, but none are new matches for the current discussion."
-                elif phase == "loading":
-                    message = ("Loading the local image relevance model; first use may download weights. "
-                               "Speech monitoring continues.")
-                else:
-                    message = f"Checking images · {downloaded} downloaded from {len(unique)} results"
-                if (self._latest_topic or topic) is fallback_topic:
-                    message += " · using a shorter query from the current spoken context"
-                self.emit("retrieval", {"phase": phase, "found": len(unique), "downloaded": downloaded,
-                                        "rejected": sum(failures.values()), "accepted": accepted,
-                                        "threshold": self.settings.relevance_threshold,
-                                        "best_score": best_score, "failures": dict(failures), "message": message})
-
-            report("downloading")
-
-            async def prepare(candidate):
-                async with semaphore:
-                    cached = cache.get_image(candidate.image_url)
-                    if cached:
-                        # Reapply current geometry filters to cached images.
-                        ratio = cached.width / max(1, cached.height)
-                        if (cached.width >= self.settings.min_width and cached.height >= self.settings.min_height
-                                and cached.width * cached.height <= self.settings.max_image_pixels
-                                and cached.path.stat().st_size <= self.settings.max_download_bytes
-                                and self.settings.min_aspect_ratio <= ratio <= self.settings.max_aspect_ratio):
-                            return cached, None
-                    try:
-                        image = await downloader.download(candidate)
-                        cache.put_image(image)
-                        return image, None
-                    except Exception as exc:
-                        log.debug("Rejected image (%s)", type(exc).__name__)
-                        return None, getattr(exc, "reason", "Download or validation failed")
-
-            prepared = []
-            best_score = None
-            ranking_failed = False
-            tasks = [asyncio.create_task(prepare(c)) for c in unique]
-            try:
-                # Publish useful validated images as they arrive. Waiting for
-                # every slow/broken URL made an otherwise working preview blank.
-                for completed in asyncio.as_completed(tasks):
-                    image, reason = await completed
-                    if image is None:
-                        failures[reason] += 1
-                        report("downloading", len(published), best_score)
-                        continue
-                    downloaded += 1
-                    prepared.append(image)
-                    with self._history_lock:
-                        recent = list(self._recent_hashes)
-                    # Topic changes should not discard an entire useful batch:
-                    # re-evaluate it against the CURRENT context before display.
-                    # Repeat if context changes while a local model is ranking.
-                    while True:
-                        basis, current = ranking_topic()
-                        if ranker.name == "clip" and getattr(ranker, "model", None) is None:
-                            report("loading", len(published), best_score)
-                        try:
-                            ranked = await _background(ranker.rank, current, prepared, recent)
-                        except Exception as exc:
-                            ranking_failed = True
-                            self._report_ranking_failure(ranker, exc, len(unique), downloaded, len(published))
-                            break
-                        if basis is (self._latest_topic or topic):
-                            break
-                    if ranking_failed:
-                        break
-                    best_score = max((c.score for c in ranked), default=None)
-                    chosen, hashes = [], list(recent)
-                    for candidate in ranked:
-                        if (candidate.score >= self.settings.relevance_threshold
-                                and not is_duplicate(candidate.phash, hashes)):
-                            chosen.append(candidate)
-                            hashes.append(candidate.phash)
-                            if len(chosen) >= self.settings.prefetch_count:
-                                break
-                    selection = (current.query, *(c.image_url for c in chosen))
-                    if chosen and selection != last_selection:
-                        last_selection = selection
-                        self._protected_paths.extend(c.local_path for c in chosen)
-                        published.update(c.image_url for c in chosen)
-                        self.emit("images", chosen)
-                        self.emit("status", f"Ready: {len(chosen)} relevant images · {ranker.name} ranking")
-                    report("ready" if published else "downloading", len(published), best_score)
-                    if len(published) >= self.settings.prefetch_count:
-                        break
-            finally:
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-            if ranking_failed:
-                # The finally block cancelled this batch's remaining downloads.
-                # Keep the ranking diagnostic visible until a genuine retry;
-                # neither the selected ranker nor its threshold is changed.
-                await self._wait_for_search_retry(generation, topic)
-            elif published:
-                report("ready", len(published), best_score)
-            else:
-                report("empty", best_score=best_score)
-                self.emit("status", "No new images met the relevance and quality filters. See image status for details.")
+                                        "message": "No usable matches yet; trying a shorter query from the current spoken context."})
+            if not published:
+                if not ranking_failed:
+                    self.emit("status", "No new images met the relevance and quality filters. See image status for details.")
                 # New speech topics wake retry immediately rather than waiting
                 # behind the old topic's fixed thirty-second failure delay.
                 await self._wait_for_search_retry(generation, topic)
             cache.prune(set(self._protected_paths))
+
+    async def _evaluate_candidates(self, topic, candidates, fallback_topic, fallback_query,
+                                   downloader, ranker, cache, rejected_urls):
+        def ranking_topic():
+            current = self._latest_topic or topic
+            # Retain full context, concepts and kind, but score matches to
+            # the shorter subject that actually found them. Once speech
+            # changes, obsolete fallback wording must not bless old images.
+            effective = replace(current, query=fallback_query) if current is fallback_topic else current
+            return current, effective
+
+        by_url = {}
+        for candidate in candidates:
+            by_url.setdefault(candidate.image_url, candidate)
+        unique = list(by_url.values())
+        # Rank metadata before prefetch to start with promising source
+        # images; retain other candidates for actual multimodal ranking.
+        if ranker.name == "metadata" and unique:
+            try:
+                current = ranking_topic()[1]
+                preferred = ranker.rank(current, unique, []) if current.query else []
+            except Exception as exc:
+                self._report_ranking_failure(ranker, exc, len(unique), 0)
+                return False, True
+            preferred_urls = {c.image_url for c in preferred}
+            unique = preferred + [c for c in unique if c.image_url not in preferred_urls]
+        semaphore = asyncio.Semaphore(3)
+        downloaded = 0
+        failures = Counter()
+        published = set()
+        last_selection = ()
+
+        def report(phase, accepted=0, best_score=None):
+            if phase == "ready":
+                message = f"{accepted} relevant images ready · {downloaded} downloaded from {len(unique)} results"
+            elif phase == "empty":
+                if not unique:
+                    message = "No images found for this query."
+                elif not downloaded:
+                    details = "; ".join(f"{count} {reason.lower()}" for reason, count in failures.items())
+                    message = f"Found {len(unique)} results, but no images could be downloaded. {details}"
+                elif best_score is not None and best_score < self.settings.relevance_threshold:
+                    message = (f"Downloaded {downloaded} images. Best relevance {best_score:.2f} is below "
+                               f"the {self.settings.relevance_threshold:.2f} minimum.")
+                else:
+                    message = f"Downloaded {downloaded} images, but none are new matches for the current discussion."
+            elif phase == "loading":
+                message = ("Loading the local image relevance model; first use may download weights. "
+                           "Speech monitoring continues.")
+            else:
+                message = f"Checking images · {downloaded} downloaded from {len(unique)} results"
+            if (self._latest_topic or topic) is fallback_topic:
+                message += " · using a shorter query from the current spoken context"
+            self.emit("retrieval", {"phase": phase, "found": len(unique), "downloaded": downloaded,
+                                    "rejected": sum(failures.values()), "accepted": accepted,
+                                    "threshold": self.settings.relevance_threshold,
+                                    "best_score": best_score, "failures": dict(failures), "message": message})
+
+        report("downloading")
+
+        async def prepare(candidate):
+            async with semaphore:
+                cached = cache.get_image(candidate.image_url)
+                if cached:
+                    # Reapply current geometry filters to cached images.
+                    ratio = cached.width / max(1, cached.height)
+                    if (cached.width >= self.settings.min_width and cached.height >= self.settings.min_height
+                            and cached.width * cached.height <= self.settings.max_image_pixels
+                            and cached.path.stat().st_size <= self.settings.max_download_bytes
+                            and self.settings.min_aspect_ratio <= ratio <= self.settings.max_aspect_ratio):
+                        return cached, None
+                if candidate.image_url in rejected_urls:
+                    return None, rejected_urls[candidate.image_url]
+                try:
+                    image = await downloader.download(candidate)
+                    cache.put_image(image)
+                    return image, None
+                except Exception as exc:
+                    log.debug("Rejected image (%s)", type(exc).__name__)
+                    reason = getattr(exc, "reason", "Download or validation failed")
+                    rejected_urls[candidate.image_url] = reason
+                    return None, reason
+
+        prepared = []
+        best_score = None
+        ranking_failed = False
+        tasks = [asyncio.create_task(prepare(c)) for c in unique]
+        try:
+            # Publish useful validated images as they arrive. Waiting for
+            # every slow/broken URL made an otherwise working preview blank.
+            for completed in asyncio.as_completed(tasks):
+                image, reason = await completed
+                if image is None:
+                    failures[reason] += 1
+                    report("downloading", len(published), best_score)
+                    continue
+                downloaded += 1
+                prepared.append(image)
+                with self._history_lock:
+                    recent = list(self._recent_hashes)
+                # Topic changes should not discard an entire useful batch:
+                # re-evaluate it against the CURRENT context before display.
+                # Repeat if context changes while a local model is ranking.
+                while True:
+                    basis, current = ranking_topic()
+                    if ranker.name in {"clip", "context_clip"} and getattr(ranker, "model", None) is None:
+                        report("loading", len(published), best_score)
+                    try:
+                        ranked = (await _background(ranker.rank, current, prepared, recent)) if current.query else []
+                    except Exception as exc:
+                        ranking_failed = True
+                        self._report_ranking_failure(ranker, exc, len(unique), downloaded, len(published))
+                        break
+                    if basis is (self._latest_topic or topic):
+                        break
+                if ranking_failed:
+                    break
+                best_score = max((c.score for c in ranked), default=None)
+                chosen, hashes = [], list(recent)
+                for candidate in ranked:
+                    if (candidate.score >= self.settings.relevance_threshold
+                            and not is_duplicate(candidate.phash, hashes)):
+                        chosen.append(candidate)
+                        hashes.append(candidate.phash)
+                        if len(chosen) >= self.settings.prefetch_count:
+                            break
+                selection = (current.query, *(c.image_url for c in chosen))
+                if chosen and selection != last_selection:
+                    last_selection = selection
+                    self._protected_paths.extend(c.local_path for c in chosen)
+                    published.update(c.image_url for c in chosen)
+                    self.emit("images", chosen)
+                    self.emit("status", f"Ready: {len(chosen)} relevant images · {ranker.name} ranking")
+                report("ready" if published else "downloading", len(published), best_score)
+                if len(published) >= self.settings.prefetch_count:
+                    break
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if not ranking_failed:
+            report("ready" if published else "empty", len(published), best_score)
+        return bool(published), ranking_failed
 
     async def _query_candidates(self, query, providers, cache):
         key = json.dumps([query.casefold(), self.settings.providers, self.settings.results_per_provider])
@@ -444,7 +612,7 @@ class Pipeline:
     def _report_ranking_failure(self, ranker, error, found, downloaded, accepted=0):
         # Exception text can include file paths, URLs or private model inputs.
         # The class name and selected ranking method give a safe diagnostic.
-        name = {"clip": "CLIP", "metadata": "metadata"}.get(ranker.name, "selected")
+        name = {"clip": "CLIP", "context_clip": "context CLIP", "metadata": "metadata"}.get(ranker.name, "selected")
         reason = "Local image ranking failed"
         log.warning("Image ranking failed (%s)", type(error).__name__)
         message = (f"Local {name} image ranking failed ({type(error).__name__}). "

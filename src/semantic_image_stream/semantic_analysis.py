@@ -129,6 +129,18 @@ def fallback_queries(topic: Topic) -> list[str]:
     Narration and a full transcript are never submitted as fallback queries.
     Explicit topic turns also apply when they are older than the recent window.
     """
+    if topic.queries:
+        # Model-derived alternatives share the complete grounded story state.
+        # Do not replace them with incidental names from raw narration.
+        alternatives, seen = [], {sanitize_query(topic.query).casefold()}
+        for query in topic.queries:
+            clean = sanitize_query(query)
+            if clean and clean.casefold() not in seen:
+                alternatives.append(clean)
+                seen.add(clean.casefold())
+                if len(alternatives) == 2:
+                    break
+        return alternatives
     public_context = _public_text(topic.context)
     active = _analysis_text(_active_context(public_context))
     # Start at the current subject's latest introduction. Other named entities
@@ -303,7 +315,10 @@ class ContextualAnalyzer:
         return Topic(query=query, context=context, concepts=tuple(selected), kind=kind)
 
 
-def build_analyzer(settings) -> SemanticAnalyzer:
+def build_analyzer(settings, stop_event=None, on_status=None) -> SemanticAnalyzer:
+    if settings.semantic_provider == "ollama":
+        from .narrative_context import LocalNarrativeAnalyzer
+        return LocalNarrativeAnalyzer(settings, stop_event=stop_event, on_status=on_status)
     return ContextualAnalyzer(use_spacy=settings.semantic_provider == "spacy")
 
 

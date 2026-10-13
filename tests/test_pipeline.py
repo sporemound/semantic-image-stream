@@ -14,8 +14,8 @@ import pytest
 
 from semantic_image_stream.audio_capture import FileCapture
 from semantic_image_stream.configuration import Settings
-from semantic_image_stream.engine import Pipeline
-from semantic_image_stream.models import AudioChunk, ImageCandidate, TranscriptSegment
+from semantic_image_stream.engine import Pipeline, SessionState
+from semantic_image_stream.models import AudioChunk, ImageCandidate, Topic, TranscriptSegment
 
 
 def test_pipeline_file_to_ranked_images_with_provider_failure(tmp_path, monkeypatch):
@@ -261,3 +261,410 @@ async def test_empty_recognition_reports_audio_received_and_continues(tmp_path):
         pipeline.stop_event.set()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_full_session_keeps_more_than_three_hundred_segments_and_interprets_every_text(tmp_path):
+    events = []
+    pipeline = None
+
+    def receive(kind, payload):
+        events.append((kind, payload))
+        if kind == "transcript" and len(payload) == 330:
+            pipeline.stop_event.set()
+        if kind == "context" and payload["phase"] == "ready":
+            pipeline.stop_event.set()
+
+    class Transcriber:
+        calls = 0
+
+        def transcribe(self, chunk):
+            first, count = (0, 320) if self.calls == 0 else (320, 10)
+            self.calls += 1
+            return [TranscriptSegment(index * 6, index * 6 + 6, f"Recorded passage {index}")
+                    for index in range(first, first + count)]
+
+    class Analyzer:
+        seen = None
+
+        def analyze(self, segments):
+            self.seen = list(segments)
+            return Topic("Arctic expedition", "Full story", summary="An expedition crosses Arctic ice.",
+                         scene="People on Arctic ice", context_used_segments=len(segments))
+
+    settings = Settings(cache_dir=str(tmp_path), transcript_window_seconds=1, semantic_interval=0.01)
+    pipeline = Pipeline(settings, receive)
+    pipeline.audio_queue = queue.Queue()
+    pipeline.topic_queue = asyncio.Queue(maxsize=1)
+    pipeline._transcriber = Transcriber()
+    for start in (0, 1920):
+        pipeline.audio_queue.put(AudioChunk(np.zeros(16000, dtype=np.float32), start))
+    await asyncio.wait_for(pipeline._transcribe(), 2)
+    assert len(pipeline.session_state.segments) == 330
+    assert pipeline.session_state.segments[0].text == "Recorded passage 0"
+    assert pipeline.session_state.segments[-1].end > 120
+    pipeline.stop_event.clear()
+    analyzer = Analyzer()
+    await asyncio.wait_for(pipeline._interpret(analyzer), 2)
+    assert analyzer.seen == pipeline.session_state.segments
+    assert pipeline._latest_topic.transcript == tuple(segment.text for segment in analyzer.seen)
+    ready = [payload for kind, payload in events if kind == "context" and payload["phase"] == "ready"]
+    assert ready[-1]["segments_recorded"] == ready[-1]["segments_used"] == 330
+
+
+@pytest.mark.asyncio
+async def test_same_query_updates_full_context_without_repeating_network_generation(tmp_path):
+    events = []
+    pipeline = None
+
+    def receive(kind, payload):
+        events.append((kind, payload))
+        if kind == "context" and payload["phase"] == "ready":
+            if payload["segments_recorded"] == 1:
+                with pipeline._segments_lock:
+                    pipeline._segments.append(TranscriptSegment(6, 12, "They search for shelter."))
+            else:
+                pipeline.stop_event.set()
+
+    class Analyzer:
+        def analyze(self, segments):
+            return Topic("Arctic expedition", " ".join(segment.text for segment in segments),
+                         summary=f"Story with {len(segments)} passages", scene="The expedition in Arctic snow",
+                         visual_subjects=("Arctic snow",), context_used_segments=len(segments))
+
+    pipeline = Pipeline(Settings(cache_dir=str(tmp_path), semantic_interval=0.01), receive)
+    pipeline._segments.append(TranscriptSegment(0, 6, "The expedition reaches the Arctic."))
+    pipeline.topic_queue = asyncio.Queue(maxsize=1)
+    await asyncio.wait_for(pipeline._interpret(Analyzer()), 2)
+    assert pipeline._generation == 1
+    assert sum(kind == "topic" for kind, _ in events) == 1
+    assert pipeline._latest_topic.summary == "Story with 2 passages"
+    assert pipeline._latest_topic.transcript == ("The expedition reaches the Arctic.", "They search for shelter.")
+    assert pipeline.session_state.topic is pipeline._latest_topic
+    assert sum(kind == "context" and payload["phase"] == "ready" for kind, payload in events) == 2
+
+
+def test_semantic_failure_keeps_capture_and_transcription_running(tmp_path, monkeypatch):
+    failed, recovered = threading.Event(), threading.Event()
+    events = []
+    settings = Settings(cache_dir=str(tmp_path), semantic_interval=0.01, search_interval=0.01)
+
+    class Capture:
+        def run(self, on_chunk, on_status, stopped):
+            samples = np.zeros(16000, dtype=np.float32)
+            on_chunk(AudioChunk(samples, 0))
+            if failed.wait(3) and not stopped.is_set():
+                on_chunk(AudioChunk(samples, 1))
+            stopped.wait(6)
+
+        def stop(self):
+            pass
+
+    class Transcriber:
+        def __init__(self, *args):
+            pass
+
+        def transcribe(self, chunk):
+            return [TranscriptSegment(chunk.start, chunk.start + 1, "The expedition walks across Arctic snow.")]
+
+        def stop(self):
+            pass
+
+    class Analyzer:
+        calls = 0
+
+        def analyze(self, segments):
+            self.calls += 1
+            if len(segments) == 1:
+                raise RuntimeError("private-transcript-detail")
+            return Topic("Arctic snow", "The expedition walks across Arctic snow.",
+                         context_used_segments=len(segments))
+
+    analyzer = Analyzer()
+    monkeypatch.setattr("semantic_image_stream.audio_capture.create_capture", lambda _: Capture())
+    monkeypatch.setattr("semantic_image_stream.transcription.FasterWhisperTranscriber", Transcriber)
+    monkeypatch.setattr("semantic_image_stream.engine.build_analyzer", lambda settings, **kwargs: analyzer)
+    monkeypatch.setattr("semantic_image_stream.search_providers.build_providers", lambda _: [])
+
+    def receive(kind, payload):
+        events.append((kind, payload))
+        if kind == "context" and payload["phase"] == "error":
+            failed.set()
+        if kind == "context" and payload["phase"] == "ready":
+            recovered.set()
+
+    pipeline = Pipeline(settings, receive)
+    pipeline.start()
+    try:
+        assert failed.wait(3), events
+        assert recovered.wait(3), events
+        assert pipeline.running and not pipeline.stop_event.is_set()
+        assert len(pipeline.session_state.segments) == 2 and analyzer.calls == 2
+        assert sum(kind == "transcript" for kind, _ in events) == 2
+        assert not any(kind in {"error", "stopped"} for kind, _ in events)
+        assert not any("private-transcript-detail" in str(payload) for _, payload in events)
+    finally:
+        pipeline.stop()
+        pipeline._thread.join(timeout=3)
+    assert not pipeline.running
+
+
+def test_stop_start_retains_session_analyzer_and_increasing_capture_timestamps(tmp_path, monkeypatch):
+    state = SessionState(segments=[TranscriptSegment(0, 400, "An expedition began earlier.")])
+    starts, built = [], []
+
+    class Capture:
+        def run(self, on_chunk, on_status, stopped):
+            on_chunk(AudioChunk(np.zeros(16000, dtype=np.float32), 0))
+            stopped.wait(6)
+
+        def stop(self):
+            pass
+
+    class Transcriber:
+        def __init__(self, *args):
+            pass
+
+        def transcribe(self, chunk):
+            starts.append(chunk.start)
+            return [TranscriptSegment(chunk.start, chunk.start + 1, "The expedition continues.")]
+
+        def stop(self):
+            pass
+
+    class Analyzer:
+        def analyze(self, segments):
+            return Topic("Arctic expedition", "Story context", context_used_segments=len(segments))
+
+    def create_analyzer(settings, **kwargs):
+        analyzer = Analyzer()
+        built.append(analyzer)
+        return analyzer
+
+    monkeypatch.setattr("semantic_image_stream.audio_capture.create_capture", lambda _: Capture())
+    monkeypatch.setattr("semantic_image_stream.transcription.FasterWhisperTranscriber", Transcriber)
+    monkeypatch.setattr("semantic_image_stream.engine.build_analyzer", create_analyzer)
+    monkeypatch.setattr("semantic_image_stream.search_providers.build_providers", lambda _: [])
+    settings = Settings(cache_dir=str(tmp_path), semantic_interval=0.01, search_interval=0.01)
+    for expected_count in (2, 3):
+        recognized = threading.Event()
+
+        def receive(kind, payload):
+            if kind == "transcript" and len(payload) == expected_count:
+                recognized.set()
+
+        pipeline = Pipeline(settings, receive, session_state=state)
+        pipeline.start()
+        try:
+            assert recognized.wait(3)
+            assert pipeline._segments is state.segments
+        finally:
+            pipeline.stop()
+            pipeline._thread.join(timeout=3)
+        assert not pipeline.running
+    assert starts == [400, 401]
+    assert [segment.end for segment in state.segments] == [400, 401, 402]
+    assert len(built) == 1 and state.analyzer is built[0]
+
+
+def test_resume_emits_retained_context_and_topic_without_changing_playback_generation(tmp_path, monkeypatch):
+    text = "The explorers camp in the Arctic."
+    retained = Topic("Arctic camp", text, transcript=(text,), context_used_segments=1)
+    settings = Settings(cache_dir=str(tmp_path), semantic_interval=0.01, search_interval=0.01)
+
+    class Analyzer:
+        def analyze(self, segments):
+            return retained
+
+    class Capture:
+        def run(self, on_chunk, on_status, stopped):
+            stopped.wait(3)
+
+        def stop(self):
+            pass
+
+    class Transcriber:
+        def __init__(self, *args):
+            pass
+
+        def stop(self):
+            pass
+
+    state = SessionState(segments=[TranscriptSegment(0, 6, text)], analyzer=Analyzer(), topic=retained,
+                         provider_key=(settings.semantic_provider, settings.context_model, settings.book_context),
+                         playback_scope=(True, frozenset({"arctic", "camp"}), frozenset()), playback_generation=7)
+    monkeypatch.setattr("semantic_image_stream.audio_capture.create_capture", lambda _: Capture())
+    monkeypatch.setattr("semantic_image_stream.transcription.FasterWhisperTranscriber", Transcriber)
+    monkeypatch.setattr("semantic_image_stream.search_providers.build_providers", lambda _: [])
+    restored = threading.Event()
+    events = []
+
+    def receive(kind, payload):
+        events.append((kind, payload))
+        if kind == "topic":
+            restored.set()
+
+    pipeline = Pipeline(settings, receive, session_state=state)
+    pipeline.start()
+    try:
+        assert restored.wait(3), events
+        topics = [payload for kind, payload in events if kind == "topic"]
+        assert topics == [retained]
+        first_topic = next(index for index, (kind, _) in enumerate(events) if kind == "topic")
+        context_index = next(index for index, (kind, payload) in enumerate(events)
+                             if kind == "context" and payload["phase"] == "ready")
+        assert context_index < first_topic
+        assert events[context_index][1]["playback_key"] == "scene:7"
+        assert not events[context_index][1]["playback_changed"]
+        assert pipeline._generation == 0 and state.playback_generation == 7
+    finally:
+        pipeline.stop()
+        pipeline._thread.join(timeout=3)
+    assert not pipeline.running
+
+
+def test_changed_story_model_rebuilds_analyzer_without_erasing_recorded_text(tmp_path, monkeypatch):
+    state = SessionState(segments=[TranscriptSegment(0, 400, "Earlier story context")])
+    created = []
+
+    def build(settings, **kwargs):
+        analyzer = object()
+        created.append(analyzer)
+        return analyzer
+
+    monkeypatch.setattr("semantic_image_stream.engine.build_analyzer", build)
+    settings = Settings(cache_dir=str(tmp_path), semantic_provider="ollama", context_model="first-local-model")
+    first = Pipeline(settings, lambda *args: None, session_state=state)
+    assert first._session_analyzer() is created[0]
+    resumed = Pipeline(settings, lambda *args: None, session_state=state)
+    assert resumed._session_analyzer() is created[0]
+    settings.context_model = "other-local-model"
+    changed = Pipeline(settings, lambda *args: None, session_state=state)
+    assert changed._session_analyzer() is created[1]
+    assert len(state.segments) == 1 and state.segments[0].text == "Earlier story context"
+
+
+@pytest.mark.asyncio
+async def test_unchanged_failed_context_waits_for_cooldown_instead_of_spinning(tmp_path):
+    failed = asyncio.Event()
+
+    class Analyzer:
+        calls = 0
+
+        def analyze(self, segments):
+            self.calls += 1
+            raise OSError("private-model-input")
+
+    def receive(kind, payload):
+        if kind == "context" and payload["phase"] == "error":
+            failed.set()
+
+    pipeline = Pipeline(Settings(cache_dir=str(tmp_path), semantic_interval=0.01), receive)
+    pipeline._segments.append(TranscriptSegment(0, 6, "Arctic expedition"))
+    pipeline.topic_queue = asyncio.Queue(maxsize=1)
+    analyzer = Analyzer()
+    task = asyncio.create_task(pipeline._interpret(analyzer))
+    try:
+        await asyncio.wait_for(failed.wait(), 2)
+        await asyncio.sleep(0.12)
+        assert analyzer.calls == 1 and not task.done()
+    finally:
+        pipeline.stop_event.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+def test_waiting_session_analysis_worker_can_stop_without_rebinding_old_model(tmp_path):
+    state = SessionState()
+    state.analysis_lock.acquire()
+    pipeline = Pipeline(Settings(cache_dir=str(tmp_path)), lambda *args: None, session_state=state)
+    called = threading.Event()
+
+    class Analyzer:
+        def analyze(self, segments):
+            called.set()
+
+    worker = threading.Thread(target=pipeline._analyze_session, args=(Analyzer(), []))
+    worker.start()
+    pipeline.stop_event.set()
+    try:
+        worker.join(timeout=1)
+        assert not worker.is_alive() and not called.is_set()
+    finally:
+        state.analysis_lock.release()
+        worker.join(timeout=1)
+
+
+def test_playback_scope_changes_only_for_meaningful_scene_or_grounded_subject_changes(tmp_path):
+    from dataclasses import replace
+
+    pipeline = Pipeline(Settings(cache_dir=str(tmp_path)), lambda *args: None)
+    camp = Topic("Arctic expedition", "All story text", summary="The explorers set up camp.",
+                 scene="Camp tents beside Arctic sea ice", visual_subjects=("Arctic sea ice", "camp tents"))
+    assert pipeline._update_playback_scope(camp)
+    first = pipeline.session_state.playback_generation
+    updated = replace(camp, summary="An expedition camps among ice.", transcript=("Earlier", "New narration"),
+                      context_used_segments=2)
+    assert not pipeline._update_playback_scope(updated)
+    assert pipeline.session_state.playback_generation == first
+    door = replace(updated, scene="A mysterious wooden door stands alone in the ice",
+                   visual_subjects=("wooden door", "Arctic sea ice"))
+    assert pipeline._update_playback_scope(door)
+    assert pipeline.session_state.playback_generation == first + 1
+    assert pipeline._update_playback_scope(replace(door, query="", visual_subjects=()))
+    assert pipeline.session_state.playback_generation == first + 2
+
+
+@pytest.mark.parametrize("first_scene,next_scene,changes", [
+    ("A wooden door stands in the Arctic camp with snow.", "A wooden door stands in the Arctic camp without snow.", True),
+    ("A wooden door stands in the Arctic camp without snow.", "A wooden door stands in the Arctic camp with no snow.", False),
+    ("An open wooden door stands in the Arctic camp.", "An opened wooden door stands in the Arctic camp.", False),
+    ("An open wooden door stands in the Arctic camp.", "A closed wooden door stands in the Arctic camp.", True),
+    ("The wooden door is open in the Arctic camp.", "The wooden door is not open in the Arctic camp.", True),
+    ("The wooden door opens in the Arctic camp.", "The wooden door never opens in the Arctic camp.", True),
+    ("The wooden door is closed in the Arctic camp.", "The wooden door is not open in the Arctic camp.", False),
+    ("The wooden door is open in the Arctic camp.", "The wooden door is not closed in the Arctic camp.", False),
+])
+def test_scene_polarity_invalidates_playback_without_clearing_for_equivalent_wording(tmp_path, first_scene, next_scene, changes):
+    from dataclasses import replace
+
+    pipeline = Pipeline(Settings(cache_dir=str(tmp_path)), lambda *args: None)
+    topic = Topic("Arctic camp door", "Full session", scene=first_scene,
+                  visual_subjects=("wooden door", "Arctic camp"))
+    assert pipeline._update_playback_scope(topic)
+    before = pipeline.session_state.playback_generation
+    changed = pipeline._update_playback_scope(replace(topic, scene=next_scene,
+                                                     summary="A paraphrased summary", context_used_segments=9))
+    assert changed is changes
+    assert pipeline.session_state.playback_generation == before + int(changes)
+
+
+@pytest.mark.asyncio
+async def test_no_grounded_visual_topic_updates_context_and_clears_pending_search(tmp_path):
+    events = []
+    pipeline = None
+
+    def receive(kind, payload):
+        events.append((kind, payload))
+        if kind == "context" and payload["phase"] == "ready":
+            if payload["segments_recorded"] == 1:
+                pipeline._segments.append(TranscriptSegment(6, 12, "There is no grounded visible scene yet."))
+            else:
+                pipeline.stop_event.set()
+
+    class Analyzer:
+        def analyze(self, segments):
+            return Topic("Arctic expedition" if len(segments) == 1 else "", "Full story",
+                         summary="The passage discusses an abstract thought.",
+                         scene="", context_used_segments=len(segments))
+
+    pipeline = Pipeline(Settings(cache_dir=str(tmp_path), semantic_interval=0.01), receive)
+    pipeline._segments.append(TranscriptSegment(0, 6, "The Arctic expedition camps."))
+    pipeline.topic_queue = asyncio.Queue(maxsize=1)
+    await asyncio.wait_for(pipeline._interpret(Analyzer()), 2)
+    assert pipeline._latest_topic.query == "" and pipeline.topic_queue.empty()
+    ready = [payload for kind, payload in events if kind == "context" and payload["phase"] == "ready"]
+    assert ready[-1]["segments_used"] == ready[-1]["segments_recorded"] == 2
+    assert ready[-1]["message"] == "No grounded visual subject in this passage yet."
+    assert ready[-1]["playback_key"] != ready[0]["playback_key"]
+    assert ready[-1]["playback_changed"]

@@ -80,6 +80,16 @@ An actual Qt fullscreen playback check used two previously retrieved genuine ast
 
 All 198 local regression tests and lint passed. An earlier complete run had one timeout in an unchanged image-validation test; that isolated check and the subsequent complete run passed without altering its deadline or validation logic.
 
+## Full-session audiobook relevance
+
+Narrative interpretation now processes every recorded segment incrementally through a verified cached local Ollama GGUF model. The raw session survives Stop/Start in memory and supplies full-transcript image embeddings. Long text is encoded in 75-token CLIP windows with token-weighted aggregation, alongside current-scene and narrative-summary embeddings. Scene scope changes invalidate older replay images, even if the compact search query stays unchanged. Corrected guesses and unsupported visual qualifiers are checked locally before accepting model-derived searches; failure retains the unprocessed passage for retry. Exact overlapping speech repetitions and invalid decoded time intervals are filtered while genuine repetitions at different times remain.
+
+An initial actual CPU CLIP comparison ran offline against 558 previously downloaded source images using a northern hunting-camp/isolated-door context. Highest-ranked images included an abandoned wooden house, an outdoor northern ATV scene, and a Nunavut photograph; their pixels were inspected. The final ranking-path check used actual locally interpreted context, all 14 supplied segments (295 encoded tokens), and the faithful book background. At the unchanged 0.40 minimum, the wooden-house image scored 0.411 while the misleading kitchen-window images scored at most 0.338, the shower curtain 0.230, and Anchorage satellite images at most 0.208. This small cached-source check demonstrates rejection of these specific earlier false positives; it does not establish correct source retrieval for every future scene or exact fictional-event depictions.
+
+An offscreen Qt check retained 350 transcript lines, displayed full-session coverage and scene context, decoded a genuine cached source image, and filled the window in fullscreen. The installed Qwen2.5:7b model on CPU processed all 14 supplied segments in 24.95 seconds in the final single-batch check, without new model downloads or provider requests. Real-model interpretation initially exposed unsupported moonlight/snow inferences despite explicit sunlight. The final guard retained a grounded doorway subject, removed invented search details and excluded the corrected cabin guess from the summary. Model-selected recorded evidence is identified explicitly when it replaces embellished prose. Raw user-provided narration is excluded from repository fixtures and packages. These checks do not inspect the user's currently running app or certify live microphone/provider behavior.
+
+All 291 local regression tests and lint passed for this update; source and wheel builds succeeded.
+
 ## Next milestones
 
 1. Benchmark real recordings and noisy live speech; add multilingual semantic analyzers and better relationship/negation handling.

@@ -1,5 +1,7 @@
 # Audio remains local. Only a sanitized query of up to 8 words is sent to
-# selected providers. Model weights are downloaded once on first use.
+# selected providers. Whisper/CLIP weights download once on first use.
+# Install Ollama and manually cache qwen2.5:7b before using full-session mode.
+# The app never downloads an absent narrative model; see README setup.
 audio_mode = "loopback" # loopback, microphone, file
 # audio_device = 25     # absent = default; enumerate with --list-devices loopback
 audio_file = ""
@@ -11,13 +13,17 @@ whisper_model = "base"
 whisper_device = "auto" # auto, cpu, cuda; CUDA failure retries on CPU
 whisper_compute_type = "auto"
 language = "" # blank = automatic language detection
-transcript_window_seconds = 45.0
+transcript_window_seconds = 45.0 # legacy field; full-session text is retained
 semantic_interval = 4.0
 search_interval = 12.0
 slideshow_interval = 9.0
 semantic_sensitivity = 0.45
-relevance_threshold = 0.30
-semantic_provider = "contextual" # optional spacy needs extra + en_core_web_sm
+relevance_threshold = 0.40
+semantic_provider = "ollama" # full session; contextual/spacy are basic alternatives
+context_model = "qwen2.5:7b" # complete cached local GGUF model; no cloud models
+book_context = "" # optional title/setting/background; changing it starts a new session
+context_cpu_threads = 6
+context_timeout = 180.0
 providers = ["wikimedia"] # priority order; duckduckgo, openverse, archive also available
 results_per_provider = 10
 prefetch_count = 6
@@ -28,7 +34,7 @@ max_aspect_ratio = 3.0
 max_download_bytes = 15000000
 max_image_pixels = 40000000
 download_timeout = 12.0
-ranking = "metadata" # clip requires optional extra; use CPU to conserve VRAM
+ranking = "context_clip" # needs [clip] extra; metadata/clip are basic/query-only modes
 clip_model = "openai/clip-vit-base-patch32"
 clip_device = "cpu"
 transition = "crossfade" # crossfade, dissolve, zoom, cut

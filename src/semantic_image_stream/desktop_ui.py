@@ -9,7 +9,7 @@ import threading
 from urllib.parse import urlsplit
 
 from PySide6.QtCore import QObject, QSignalBlocker, Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
+from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
@@ -78,6 +78,12 @@ class MainWindow(QMainWindow):
         self.settings = deepcopy(settings)
         self.config_path = Path(config_path) if config_path else None
         self.pipeline = None
+        self._session_state = None
+        self._session_book_context = settings.book_context
+        self._transcript_segments: list[TranscriptSegment] = []
+        self._context_payload: dict = {}
+        self._playback_key = ""
+        self._explicit_playback_key = False
         self._session = 0
         self._device_request = 0
         self._devices_loading = False
@@ -277,8 +283,25 @@ class MainWindow(QMainWindow):
             provider_layout.addWidget(check)
             self.input_controls.append(check)
         self.form.addRow("Image sources", providers)
+        self.interpreter = QComboBox()
+        for label, value in (("Full session · local model", "ollama"), ("Basic phrase analysis", "contextual"),
+                             ("spaCy phrases (optional)", "spacy")):
+            self.interpreter.addItem(label, value)
+        self.interpreter.setCurrentIndex(self.interpreter.findData(self.settings.semantic_provider))
+        self.interpreter.currentIndexChanged.connect(self._update_context_controls)
+        self.form.addRow("Interpreter", self.interpreter)
+        self.context_model = QLineEdit(self.settings.context_model)
+        self.context_model.setPlaceholderText("qwen2.5:7b")
+        self.context_model.setToolTip("Name of an installed local Ollama model. Narration stays on this computer.")
+        self.form.addRow("Local context model", self.context_model)
+        self.book_context = QLineEdit(self.settings.book_context)
+        self.book_context.setPlaceholderText("Optional title, setting, or background")
+        self.book_context.setToolTip("Optional background for local interpretation. Changing this starts a fresh book context next time monitoring starts.")
+        self.form.addRow("Book or context", self.book_context)
+        self.input_controls.extend([self.interpreter, self.context_model, self.book_context])
         self.ranking = QComboBox()
-        self.ranking.addItem("Context + source metadata", "metadata")
+        self.ranking.addItem("Full context + image embeddings", "context_clip")
+        self.ranking.addItem("Source metadata (basic)", "metadata")
         self.ranking.addItem("Local CLIP embeddings", "clip")
         self.ranking.setCurrentIndex(self.ranking.findData(self.settings.ranking))
         self.form.addRow("Relevance scoring", self.ranking)
@@ -322,12 +345,23 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.transcript = QTextEdit()
         self.transcript.setReadOnly(True)
-        self.transcript.document().setMaximumBlockCount(160)
-        self.transcript.setPlaceholderText("Timestamped speech appears here. Audio is transcribed locally.")
+        self.transcript.setPlaceholderText("The complete recorded session appears here. Transcription stays local.")
+        self.context_panel = QWidget()
+        context_layout = QVBoxLayout(self.context_panel)
+        context_layout.setContentsMargins(0, 0, 0, 0)
+        self.context_status = QLabel("Waiting for recorded speech · context stays local.")
+        self.context_status.setWordWrap(True)
+        self.context_status.setObjectName("status")
+        self.context_text = QTextEdit()
+        self.context_text.setReadOnly(True)
+        self.context_text.setPlaceholderText("The local interpreter's narrative summary, current scene, and visual subjects appear here.")
+        context_layout.addWidget(self.context_status)
+        context_layout.addWidget(self.context_text, 1)
         self.image_history = QListWidget()
         self.image_history.itemClicked.connect(self._select_history)
         self.topic_history = QListWidget()
         self.tabs.addTab(self.transcript, "Transcript")
+        self._context_tab_index = self.tabs.addTab(self.context_panel, "Context")
         self.tabs.addTab(self.image_history, "Images")
         self.tabs.addTab(self.topic_history, "Topics")
         self.tabs.setMinimumHeight(145)
@@ -343,6 +377,10 @@ class MainWindow(QMainWindow):
         self.clear_history_button = QPushButton("Delete session history")
         self.clear_history_button.clicked.connect(self.clear_history)
         sidebar_layout.addWidget(self.clear_history_button)
+        self.new_book_button = QPushButton("New book / clear context")
+        self.new_book_button.setToolTip("Start a fresh local transcript and interpretation. Image cache remains available.")
+        self.new_book_button.clicked.connect(self.new_book)
+        sidebar_layout.addWidget(self.new_book_button)
         privacy = QLabel("Audio stays on this computer. Search queries are sent to the selected image sources. Check source licenses before reuse.")
         privacy.setObjectName("privacy")
         privacy.setWordWrap(True)
@@ -364,6 +402,7 @@ class MainWindow(QMainWindow):
         self.status_label.setObjectName("status")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
+        self._update_context_controls()
 
     @staticmethod
     def _spin(minimum, maximum, value, step, suffix="") -> QDoubleSpinBox:
@@ -389,6 +428,8 @@ class MainWindow(QMainWindow):
             "audio_device": self._device_preferred if self._devices_loading else self.audio_device.currentData(),
             "audio_file": self.audio_file.text().strip(), "whisper_model": self.model.currentText().strip(),
             "whisper_device": self.whisper_device.currentData(), "ranking": self.ranking.currentData(),
+            "semantic_provider": self.interpreter.currentData(), "context_model": self.context_model.text().strip(),
+            "book_context": self.book_context.text().strip(),
             "providers": [name for name, check in self.provider_boxes.items() if check.isChecked()],
             "slideshow_interval": self.interval.value(), "semantic_sensitivity": self.sensitivity.value(),
             "relevance_threshold": self.threshold.value(), "semantic_interval": self.semantic_interval.value(),
@@ -421,12 +462,53 @@ class MainWindow(QMainWindow):
                 with QSignalBlocker(control):
                     control.setValue(value)
             self.ranking.setCurrentIndex(self.ranking.findData(self.settings.ranking))
+            self.interpreter.setCurrentIndex(self.interpreter.findData(self.settings.semantic_provider))
+            self.context_model.setText(self.settings.context_model)
+            self.book_context.setText(self.settings.book_context)
             for provider, check in self.provider_boxes.items():
                 check.setChecked(provider in self.settings.providers)
             self._apply_presentation()
             self._device_status(f"{AUDIOBOOK_PRESETS[key].name} preset applied. Select Save settings to keep it.")
         except Exception as exc:
             self._error(f"Could not apply audiobook preset: {exc}")
+
+    def _update_context_controls(self, *args) -> None:
+        if hasattr(self, "context_model"):
+            self.context_model.setEnabled(not (self._monitoring or self._stopping)
+                                          and self.interpreter.currentData() == "ollama")
+
+    def _reset_context(self, book_context: str = "") -> None:
+        """Start a new in-memory book without letting old workers update its panels."""
+        self._session += 1
+        self._session_state = None
+        self.pipeline = None
+        self._session_book_context = book_context
+        self._transcript_segments.clear()
+        self._context_payload.clear()
+        self._playback_key = ""
+        self._explicit_playback_key = False
+        self.transcript.clear()
+        self.context_text.clear()
+        self.context_status.setText("Waiting for recorded speech · context stays local.")
+        self.context_status.setObjectName("status")
+        self.context_status.style().unpolish(self.context_status)
+        self.context_status.style().polish(self.context_status)
+        self.tabs.setTabText(self._context_tab_index, "Context")
+        self.topic_history.clear()
+        self.current_topic = ""
+        self.topic_label.setText("Waiting for a topic")
+        self.slideshow.clear()
+
+    def new_book(self) -> None:
+        if self._monitoring or self._stopping:
+            return
+        self.book_context.clear()
+        self.settings.book_context = ""
+        self._reset_context()
+        self._retrieval_message = "Images: waiting for the new book's spoken context."
+        self._retrieval_seen = False
+        self._refresh_image_status()
+        self._device_status("New book started. Previous transcript and interpretation cleared locally.")
 
     def _load_devices(self, *args) -> None:
         if self._monitoring or self._stopping:
@@ -525,8 +607,13 @@ class MainWindow(QMainWindow):
                 self._error(self._device_selection_error)
                 return
         try:
-            from .engine import Pipeline
+            from .engine import Pipeline, SessionState
             self.settings = self._read_settings()
+            changed_book = self.settings.book_context != self._session_book_context
+            if changed_book:
+                self._reset_context(self.settings.book_context)
+            if self._session_state is None:
+                self._session_state = SessionState()
             self._session += 1
             token = self._session
 
@@ -535,8 +622,10 @@ class MainWindow(QMainWindow):
                     self.relay.pipeline_event.emit(token, kind, value)
                 except RuntimeError:
                     pass
-            self.pipeline = Pipeline(deepcopy(self.settings), callback)
+            self.pipeline = Pipeline(deepcopy(self.settings), callback, session_state=self._session_state)
             self.current_topic = ""
+            self._playback_key = ""
+            self._explicit_playback_key = False
             self.topic_label.setText("Waiting for a topic")
             self.slideshow.reset_playback()
             self._monitoring = True
@@ -546,7 +635,8 @@ class MainWindow(QMainWindow):
             self._refresh_image_status()
             self._update_controls()
             self.status_label.setObjectName("status")
-            self.status_label.setText("Starting local speech recognition…")
+            self.status_label.setText("Book/context changed · starting a fresh local session…" if changed_book
+                                      else "Starting local speech recognition…")
             self.pipeline.start()
         except Exception as exc:
             self._monitoring = False
@@ -567,9 +657,11 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(self._monitoring and not self._stopping)
         self.clear_cache_button.setEnabled(not active)
         self.clear_history_button.setEnabled(not active)
+        self.new_book_button.setEnabled(not active)
         for control in self.input_controls:
             control.setEnabled(not active)
         self._preset_selected()
+        self._update_context_controls()
         if not active:
             is_file = self.audio_mode.currentData() == "file"
             self.audio_file.setEnabled(is_file)
@@ -590,21 +682,23 @@ class MainWindow(QMainWindow):
             self._update_controls()
             self.status_label.setText(self._last_error or "Monitoring stopped · images remain available")
         elif kind == "transcript":
-            segments: list[TranscriptSegment] = payload
-            lines = []
-            for segment in segments[-160:]:
-                seconds = max(0, int(segment.start))
-                lines.append(f"[{seconds // 60:02d}:{seconds % 60:02d}] {segment.text.strip()}")
-            scrollbar = self.transcript.verticalScrollBar()
-            at_end = scrollbar.value() >= scrollbar.maximum() - 10
-            self.transcript.setPlainText("\n".join(lines))
-            if at_end:
-                scrollbar.setValue(scrollbar.maximum())
+            self._show_transcript(payload)
+        elif kind == "context":
+            self._show_context(payload)
         elif kind == "topic":
             topic: Topic = payload
+            if topic.summary or topic.scene or topic.visual_subjects or topic.context_used_segments:
+                self._show_context({"phase": "ready", "summary": topic.summary, "scene": topic.scene,
+                                    "visual_subjects": topic.visual_subjects,
+                                    "segments_used": topic.context_used_segments,
+                                    "segments_recorded": len(self._transcript_segments),
+                                    "method": self.settings.semantic_provider,
+                                    "model": self.settings.context_model if self.settings.semantic_provider == "ollama" else ""})
             if topic.query != self.current_topic:
                 self.current_topic = topic.query
-                self.slideshow.set_topic(topic.query)
+                if not self._explicit_playback_key:
+                    self._playback_key = topic.query
+                    self.slideshow.set_topic(self._playback_key)
                 self.topic_label.setText(topic.query)
                 self.topic_history.insertItem(0, f"{topic.query}\n{topic.kind.replace('_', ' ').title()}")
                 self.topic_history.item(0).setToolTip(topic.context)
@@ -614,7 +708,7 @@ class MainWindow(QMainWindow):
             missing = sum(not candidate.path.is_file() for candidate in payload)
             if not self._retrieval_seen:
                 self._retrieval_message = f"{len(payload)} relevant images available."
-            self.slideshow.set_queue(payload, self.current_topic)
+            self.slideshow.set_queue(payload, self._playback_key)
             # A rejected first file must not delay a later usable image by an
             # entire slideshow interval, including in progressive batches.
             while self.canvas.current_pixmap.isNull() and self.slideshow.pending and not self.slideshow.paused:
@@ -625,6 +719,71 @@ class MainWindow(QMainWindow):
             self._retrieval_seen = True
             self._retrieval_message = self._format_retrieval(payload)
             self._refresh_image_status()
+
+    def _show_transcript(self, segments: list[TranscriptSegment]) -> None:
+        """Append a full-session event's new lines without rebuilding an audiobook."""
+        count = len(self._transcript_segments)
+        extends = len(segments) >= count and segments[:count] == self._transcript_segments
+        scrollbar = self.transcript.verticalScrollBar()
+        position = scrollbar.value()
+        at_end = position >= scrollbar.maximum() - 10
+        if not extends:
+            self.transcript.clear()
+            count = 0
+        lines = []
+        for segment in segments[count:]:
+            seconds = max(0, int(segment.start))
+            lines.append(f"[{seconds // 60:02d}:{seconds % 60:02d}] {segment.text.strip()}")
+        if lines:
+            cursor = QTextCursor(self.transcript.document())
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            cursor.insertText(("\n" if count else "") + "\n".join(lines))
+        self._transcript_segments = list(segments)
+        if at_end:
+            scrollbar.setValue(scrollbar.maximum())
+        else:
+            scrollbar.setValue(position)
+        self._show_context({"segments_recorded": len(segments)})
+
+    def _show_context(self, payload: dict) -> None:
+        if payload.get("playback_key") is not None:
+            playback_key = "context:" + str(payload["playback_key"])
+            self._explicit_playback_key = True
+            if playback_key != self._playback_key:
+                self._playback_key = playback_key
+                self.slideshow.set_topic(playback_key)
+        self._context_payload.update(payload)
+        context = self._context_payload
+        recorded = max(len(self._transcript_segments), int(context.get("segments_recorded") or 0))
+        used = max(0, int(context.get("segments_used") or 0))
+        phase = str(context.get("phase") or "waiting")
+        if used >= recorded and recorded:
+            coverage = f"Using {recorded} recorded segments · full session"
+        else:
+            coverage = f"Using {used} of {recorded} recorded segments"
+            if recorded > used:
+                coverage += f" · {recorded - used} awaiting context update"
+        message = str(context.get("message") or ("Updating local interpretation…" if phase == "updating" else ""))
+        method = str(context.get("method") or self.interpreter.currentText())
+        method = {"ollama": "Full session · local model", "contextual": "Basic phrase analysis",
+                  "spacy": "spaCy phrase analysis"}.get(method, method)
+        model = str(context.get("model") or "")
+        checked = ("Details checked against recorded passages"
+                   if context.get("summary_method") == "model-selected recorded evidence" else "")
+        self.context_status.setText("\n".join(part for part in (coverage, message, checked,
+                                   f"{method} · {model}" if model else method) if part))
+        self.context_status.setObjectName("error" if phase == "error" else "status")
+        self.context_status.style().unpolish(self.context_status)
+        self.context_status.style().polish(self.context_status)
+        self.tabs.setTabText(self._context_tab_index, "Context · error" if phase == "error" else "Context")
+        sections = []
+        for key, title in (("summary", "Narrative context"), ("scene", "Current scene")):
+            if context.get(key):
+                sections.append(f"{title}\n{context[key]}")
+        subjects = context.get("visual_subjects") or ()
+        if subjects:
+            sections.append("Visual subjects\n" + "\n".join(str(subject) for subject in subjects))
+        self.context_text.setPlainText("\n\n".join(sections))
 
     @staticmethod
     def _format_retrieval(payload: dict) -> str:
@@ -779,11 +938,7 @@ class MainWindow(QMainWindow):
     def clear_history(self) -> None:
         try:
             self._maintenance_pipeline().clear_history()
-            self.slideshow.clear_history()
-            self.topic_history.clear()
-            self.transcript.clear()
-            self.current_topic = ""
-            self.topic_label.setText("Waiting for a topic")
+            self._reset_context(self.book_context.text().strip())
             self.status_label.setText("Stored session history deleted")
         except Exception as exc:
             self._error(f"Could not delete history: {exc}")
