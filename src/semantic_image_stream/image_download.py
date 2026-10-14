@@ -28,6 +28,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .configuration import Settings
 from .models import ImageCandidate
+from .memory_pressure import PIXEL_MEMORY_LOCK
 from .search_providers import USER_AGENT, is_known_generated, is_known_generation_software
 
 ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp", "image/gif", "image/bmp", "image/tiff"}
@@ -35,6 +36,7 @@ ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP", "GIF", "BMP", "TIFF"}
 MAX_REDIRECTS = 3
 DEFAULT_RATE_LIMIT_SECONDS = 60.0
 MAX_RATE_LIMIT_SECONDS = 3600.0
+IMAGE_DECODE_LOCK = PIXEL_MEMORY_LOCK
 Resolver = Callable[[str, int], Awaitable[Iterable[str]]]
 
 
@@ -247,6 +249,20 @@ class ImageDownloader:
         raise DownloadError("Image redirect limit exceeded")
 
     def _decode(self, data: bytes) -> tuple[bytes, str, int, int, str, bool]:
+        from .memory_pressure import MemoryPressureError, is_memory_allocation_error
+        # Native decoding can outlive async cancellation. Keep this lock on
+        # the actual operation, across batches/restarts, rather than a future.
+        with IMAGE_DECODE_LOCK:
+            try:
+                return self._decode_owned(data)
+            except Exception as error:
+                if isinstance(error, MemoryPressureError) or is_memory_allocation_error(error):
+                    raise DownloadError("Windows memory is low. Close unused apps; images will retry.",
+                                        reason="Low system memory") from None
+                raise
+
+    def _decode_owned(self, data: bytes) -> tuple[bytes, str, int, int, str, bool]:
+        from .memory_pressure import require_memory
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("error", Image.DecompressionBombWarning)
@@ -256,11 +272,20 @@ class ImageDownloader:
                     width, height = image.size
                     if width <= 0 or height <= 0 or width * height > self.settings.max_image_pixels:
                         raise DownloadError("Image exceeds the decoded pixel limit", reason="Image exceeds safety limits")
+                    require_memory(width * height * 12)
                     image.verify()
                 with Image.open(io.BytesIO(data)) as original:
                     original.seek(0)  # Animated files are reduced to their first existing frame.
                     original.load()
-                    image = ImageOps.exif_transpose(original)
+                    # Inspect indicators before orientation changes metadata.
+                    text_metadata = [v for v in original.info.values() if isinstance(v, str)]
+                    software = [value for key, value in original.info.items()
+                                if str(key).casefold() in {"software", "parameters", "workflow", "generation_parameters"}]
+                    exif = original.getexif()
+                    if isinstance(exif.get(305), str):
+                        software.append(exif[305])
+                    ImageOps.exif_transpose(original, in_place=True)
+                    image = original
                     width, height = image.size
                     if width < self.settings.min_width or height < self.settings.min_height:
                         raise DownloadError("Image resolution is below the configured minimum",
@@ -271,34 +296,23 @@ class ImageDownloader:
                                             reason="Image aspect ratio outside allowed range")
                     # Read generated-image indicators from standard textual
                     # metadata too, but do not claim absence proves authenticity.
-                    text_metadata = [v for v in original.info.values() if isinstance(v, str)]
-                    software = [value for key, value in original.info.items()
-                                if str(key).casefold() in {"software", "parameters", "workflow", "generation_parameters"}]
-                    exif = original.getexif()
-                    if isinstance(exif.get(305), str):
-                        software.append(exif[305])  # Standard EXIF Software field.
                     generated = (is_known_generated(*text_metadata)
                                  or any(is_known_generation_software(value) for value in software))
                     if generated and getattr(self.settings, "exclude_ai_generated", True):
                         raise DownloadError("Embedded metadata identifies a generated image", reason="Generated image excluded")
                     phash = str(imagehash.phash(image))
-                    output = io.BytesIO()
-                    if image.mode in {"RGBA", "LA"} or "transparency" in original.info:
-                        clean = Image.new("RGBA", image.size)
-                        clean.paste(image.convert("RGBA"))
-                        clean.save(output, format="PNG", optimize=True)
-                        extension = ".png"
-                    elif original.format == "PNG":
-                        clean = Image.new("RGB", image.size)
-                        clean.paste(image.convert("RGB"))
-                        clean.save(output, format="PNG", optimize=True)
-                        extension = ".png"
-                    else:
-                        clean = Image.new("RGB", image.size)
-                        clean.paste(image.convert("RGB"))
-                        clean.save(output, format="JPEG", quality=92, optimize=True)
-                        extension = ".jpg"
-                    encoded = output.getvalue()
+                    transparent = image.mode in {"RGBA", "LA"} or "transparency" in original.info
+                    mode = "RGBA" if transparent else "RGB"
+                    png = transparent or original.format == "PNG"
+                    with image.convert(mode) as clean, io.BytesIO() as output:
+                        # Conversion provides the only independent raster.
+                        # Removing metadata here preserves the original safety
+                        # contract without another full-sized paste buffer.
+                        clean.info.clear()
+                        clean.save(output, format="PNG" if png else "JPEG",
+                                   **({"optimize": True} if png else {"quality": 92, "optimize": True}))
+                        encoded = output.getvalue()
+                    extension = ".png" if png else ".jpg"
                     if len(encoded) > self.settings.max_download_bytes:
                         raise DownloadError("Validated image exceeds the cache file size limit", reason="Image exceeds safety limits")
                     return encoded, extension, width, height, phash, generated

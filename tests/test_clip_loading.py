@@ -19,6 +19,7 @@ def cached(tmp_path):
 
 
 def fake_libraries(monkeypatch, factory):
+    monkeypatch.setattr("semantic_image_stream.memory_pressure.require_memory", lambda *args, **kwargs: None)
     class Processor:
         @classmethod
         def from_pretrained(cls, source, **options):

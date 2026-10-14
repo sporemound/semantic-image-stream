@@ -121,6 +121,7 @@ class MainWindow(QMainWindow):
         self._stopping = False
         self._fullscreen = False
         self._fullscreen_title = False
+        self._fullscreen_context = False
         self._normal_geometry = None
         self._last_error = ""
         self._image_error = ""
@@ -251,8 +252,18 @@ class MainWindow(QMainWindow):
         self.fullscreen_title_button = QPushButton("Fullscreen with title")
         self.fullscreen_title_button.setToolTip("Show the image title, artist, source, and rights credit. Escape returns to controls.")
         self.fullscreen_title_button.clicked.connect(lambda: self.toggle_fullscreen(with_title=True))
-        feedback_row.addWidget(self.fullscreen_title_button)
         transport_column.addLayout(feedback_row)
+        fullscreen_modes = QHBoxLayout()
+        fullscreen_modes.addStretch()
+        fullscreen_modes.addWidget(self.fullscreen_title_button)
+        self.fullscreen_context_button = QPushButton("Fullscreen with context")
+        self.fullscreen_context_button.setToolTip(
+            "Show live speech subtitles, narrative context, scene, subjects, image title, and credits. "
+            "Scroll longer context; Escape returns to controls."
+        )
+        self.fullscreen_context_button.clicked.connect(lambda: self.toggle_fullscreen(with_context=True))
+        fullscreen_modes.addWidget(self.fullscreen_context_button)
+        transport_column.addLayout(fullscreen_modes)
         stage_layout.addWidget(self.transport)
         self.body.addWidget(stage)
         self.sidebar = QWidget()
@@ -980,6 +991,8 @@ class MainWindow(QMainWindow):
         self._book_guidance_edited()
         self._transcript_segments.clear()
         self._context_payload.clear()
+        self.canvas.set_context("", "", ())
+        self.canvas.set_transcript("")
         self._feedback_topic = None
         self._feedback_pending.clear()
         self._context_frozen = False
@@ -1288,6 +1301,8 @@ class MainWindow(QMainWindow):
             cursor.movePosition(QTextCursor.MoveOperation.End)
             cursor.insertText(("\n" if count else "") + "\n".join(lines))
         self._transcript_segments = list(segments)
+        latest = next((segment.text for segment in reversed(segments) if segment.text.strip()), "")
+        self.canvas.set_transcript(latest)
         if at_end:
             scrollbar.setValue(scrollbar.maximum())
         else:
@@ -1355,6 +1370,7 @@ class MainWindow(QMainWindow):
         if subjects:
             sections.append("Visual subjects\n" + "\n".join(str(subject) for subject in subjects))
         self.context_text.setPlainText("\n\n".join(sections))
+        self.canvas.set_context(context.get("summary") or "", context.get("scene") or "", subjects)
         if not self._retrieval_seen:
             if phase == "error":
                 heading = "Images: local story understanding needs attention."
@@ -1631,11 +1647,14 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._error(f"Could not delete history: {exc}")
 
-    def toggle_fullscreen(self, with_title: bool | None = None) -> None:
+    def toggle_fullscreen(self, with_title: bool | None = None, *, with_context: bool | None = None) -> None:
+        title, context = bool(with_title) or bool(with_context), bool(with_context)
         if self._fullscreen:
-            if with_title is not None and bool(with_title) != self._fullscreen_title:
-                self._fullscreen_title = bool(with_title)
-                self.canvas.set_title_overlay(self._fullscreen_title)
+            if ((with_title is not None or with_context is not None)
+                    and (title, context) != (self._fullscreen_title, self._fullscreen_context)):
+                self._fullscreen_title, self._fullscreen_context = title, context
+                self.canvas.set_title_overlay(title)
+                self.canvas.set_context_overlay(context)
             else:
                 self.leave_fullscreen()
             return
@@ -1651,8 +1670,9 @@ class MainWindow(QMainWindow):
                   self.status_label, self.image_status_label)
         self._fullscreen_visibility = [(widget, not widget.isHidden()) for widget in chrome]
         self._fullscreen = True
-        self._fullscreen_title = bool(with_title)
-        self.canvas.set_title_overlay(self._fullscreen_title)
+        self._fullscreen_title, self._fullscreen_context = title, context
+        self.canvas.set_title_overlay(title)
+        self.canvas.set_context_overlay(context)
         for widget, _ in self._fullscreen_visibility:
             widget.hide()
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1675,7 +1695,9 @@ class MainWindow(QMainWindow):
             return
         self._fullscreen = False
         self._fullscreen_title = False
+        self._fullscreen_context = False
         self.canvas.set_title_overlay(False)
+        self.canvas.set_context_overlay(False)
         self.showNormal()
         outer = self.centralWidget().layout()
         margins, spacing, stage_spacing, handle_width = self._fullscreen_layout

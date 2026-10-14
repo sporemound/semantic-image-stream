@@ -78,6 +78,7 @@ def test_full_context_mode_selects_actual_image_embedding_ranker():
 
 
 def test_complete_cached_clip_snapshot_wins_over_newer_partial_download(tmp_path, monkeypatch):
+    monkeypatch.setattr("semantic_image_stream.memory_pressure.require_memory", lambda *args, **kwargs: None)
     from semantic_image_stream.image_ranking import ClipRanker
     root = tmp_path / "models" / "clip" / "models--openai--clip-vit-base-patch32" / "snapshots"
     complete = root / "complete"

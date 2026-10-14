@@ -21,6 +21,8 @@ from .semantic_analysis import TopicGate, build_analyzer, fallback_queries, sani
 
 log = logging.getLogger(__name__)
 GPU_LOCK = threading.Lock()
+_NATIVE_RETIREMENT_LOCK = threading.Lock()
+_NATIVE_RETIREMENT_EVENTS = []
 _SOURCE_PAUSED = object()
 IMAGE_FILTER_FIELDS = ("time_filter_enabled", "time_filter_target", "time_filter_start", "time_filter_end",
                        "time_filter_scale", "time_filter_include_undated", "exclude_ai_generated")
@@ -166,6 +168,8 @@ class Pipeline:
         self._feedback_worker_running = False
         self._loop = None
         self._image_filter_revision = 0
+        self._native_workers = {}
+        self._native_workers_lock = threading.Lock()
 
     def update_book_guidance(self, settings):
         """Apply a visual brief immediately; update interpretation independently."""
@@ -299,6 +303,50 @@ class Pipeline:
             threading.Thread(target=self._capture.stop, daemon=True, name="sis-audio-stop").start()
         if self._transcriber:
             self._transcriber.stop()
+        self._retire_native_workers()
+
+    def _retire_native_workers(self):
+        with self._native_workers_lock:
+            workers, self._native_workers = self._native_workers, {}
+        if not workers:
+            return
+        releases = {"speech": getattr(self._transcriber, "close", None),
+                    "ranking": getattr(self._ranker, "close", None)}
+        # Capture bound old-resource methods, never mutable Pipeline fields.
+        events = [worker.retire(releases.get(name)) for name, worker in workers.items()]
+        self._transcriber = self._ranker = None
+        with _NATIVE_RETIREMENT_LOCK:
+            _NATIVE_RETIREMENT_EVENTS[:] = [event for event in _NATIVE_RETIREMENT_EVENTS if not event.is_set()]
+            _NATIVE_RETIREMENT_EVENTS.extend(events)
+
+    async def _wait_for_native_cleanup(self):
+        reported = False
+        while not self.stop_event.is_set():
+            with _NATIVE_RETIREMENT_LOCK:
+                _NATIVE_RETIREMENT_EVENTS[:] = [event for event in _NATIVE_RETIREMENT_EVENTS if not event.is_set()]
+                waiting = bool(_NATIVE_RETIREMENT_EVENTS)
+            if not waiting:
+                return True
+            if not reported:
+                self.emit("status", "Waiting for the previous local model work to release memory before resuming.")
+                reported = True
+            await asyncio.sleep(.1)
+        return False
+
+    async def _native_background(self, name, function, *args):
+        if self.stop_event.is_set():
+            from .native_workers import NativeWorkerClosed
+            raise NativeWorkerClosed("Local model work stopped")
+        with self._native_workers_lock:
+            if self.stop_event.is_set():
+                from .native_workers import NativeWorkerClosed
+                raise NativeWorkerClosed("Local model work stopped")
+            worker = self._native_workers.get(name)
+        if worker is None:
+            # Small direct/isolated operations also use this class without a
+            # monitoring lifecycle. Production creates persistent workers.
+            return await _background(function, *args)
+        return await worker.run(function, *args)
 
     def _run(self):
         try:
@@ -313,6 +361,9 @@ class Pipeline:
 
     async def _main(self):
         self._loop = asyncio.get_running_loop()
+        if not await self._wait_for_native_cleanup():
+            return
+        from .native_workers import NativeWorker
         from .audio_capture import create_capture
         from .transcription import FasterWhisperTranscriber
         from .search_providers import build_providers
@@ -338,6 +389,9 @@ class Pipeline:
         cache = Cache(self.settings)
         downloader = ImageDownloader(self.settings)
         self._cache = cache
+        with self._native_workers_lock:
+            self._native_workers = {name: NativeWorker(name=f"sis-{name}")
+                                    for name in ("speech", "ranking", "context")}
         with self._history_lock:
             self._recent_hashes.update(cache.seen_phashes())
             self._displayed_urls.update(cache.seen_urls())
@@ -400,6 +454,7 @@ class Pipeline:
                 await asyncio.sleep(0.1)
         finally:
             self.stop_event.set()
+            self._retire_native_workers()
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -412,14 +467,34 @@ class Pipeline:
             self._cache = None
 
     async def _transcribe(self):
+        retry_chunk = None
         while not self.stop_event.is_set():
-            try:
-                chunk = self.audio_queue.get_nowait()
-            except queue.Empty:
-                await asyncio.sleep(0.1)
-                continue
+            if retry_chunk is None:
+                try:
+                    chunk = self.audio_queue.get_nowait()
+                except queue.Empty:
+                    await asyncio.sleep(0.1)
+                    continue
+            else:
+                chunk = retry_chunk
             self.emit("status", "Recognizing captured audio locally…")
-            segments = await _background(self._transcriber.transcribe, chunk)
+            try:
+                segments = await self._native_background("speech", self._transcriber.transcribe, chunk)
+            except Exception as exc:
+                from .memory_pressure import MemoryPressureError, is_memory_allocation_error
+                if self.stop_event.is_set():
+                    break
+                if not isinstance(exc, MemoryPressureError) and not is_memory_allocation_error(exc):
+                    raise
+                log.warning("Local transcription paused for memory pressure (%s)", type(exc).__name__)
+                self.emit("status", "Windows memory is low. Close unused apps; transcription will retry. "
+                                    "Recorded story context is retained.")
+                retry_chunk = chunk
+                deadline = time.monotonic() + 10
+                while not self.stop_event.is_set() and time.monotonic() < deadline:
+                    await asyncio.sleep(.1)
+                continue
+            retry_chunk = None
             if self.stop_event.is_set():
                 break
             if segments:
@@ -457,7 +532,7 @@ class Pipeline:
                 try:
                     if analyzer is None:
                         analyzer = self._session_analyzer()
-                    topic = await _background(self._analyze_session, analyzer, window)
+                    topic = await self._native_background("context", self._analyze_session, analyzer, window)
                 except Exception as exc:
                     if self.stop_event.is_set():
                         break
@@ -894,7 +969,8 @@ class Pipeline:
                     # current primary query instead of paging its predecessor.
                     break
                 transient_download = any(attempt_failures[reason] > previous_failures[reason]
-                    for reason in ("Source temporarily rate-limited", "Source unavailable", "Network error", "Image download timed out"))
+                    for reason in ("Source temporarily rate-limited", "Source unavailable", "Network error",
+                                   "Image download timed out", "Low system memory"))
                 # An actual healthy response exhausts this page even if a
                 # different source is cooling down. Failed downloads retain
                 # their page so its already-cached URLs can be retried safely.
@@ -935,7 +1011,7 @@ class Pipeline:
                                                     "looking for more current-scene images." if self._approved_images else
                                                     "No usable matches yet; trying a shorter query from the current spoken context.")})
             transient = any(attempt_failures[reason] for reason in ("Source temporarily rate-limited", "Source unavailable",
-                                                                  "Network error", "Image download timed out"))
+                                                                  "Network error", "Image download timed out", "Low system memory"))
             if self._approved_images and not ranking_failed:
                 count = len(self._approved_images)
                 message = (f"{count} relevant images ready for this scene." if count >= self.settings.prefetch_count else
@@ -1111,7 +1187,7 @@ class Pipeline:
                     if ranker.name in {"clip", "context_clip", "learned_context"} and getattr(ranker, "model", None) is None:
                         report("loading", len(published), best_score)
                     try:
-                        batch = (await _background(ranker.rank, current, to_rank, recent)) if current.query else []
+                        batch = (await self._native_background("ranking", ranker.rank, current, to_rank, recent)) if current.query else []
                     except Exception as exc:
                         ranking_failed = True
                         self._report_ranking_failure(ranker, exc, len(unique), downloaded, len(published))
@@ -1278,6 +1354,7 @@ class Pipeline:
         return candidates
 
     def _report_ranking_failure(self, ranker, error, found, downloaded, accepted=0):
+        from .memory_pressure import is_memory_allocation_error
         # Exception text can include file paths, URLs or private model inputs.
         # The class name and selected ranking method give a safe diagnostic.
         name = {"clip": "CLIP", "context_clip": "context CLIP", "learned_context": "trained relevance",
@@ -1286,8 +1363,11 @@ class Pipeline:
         log.warning("Image ranking failed (%s)", type(error).__name__)
         message = (f"Local {name} image ranking failed ({type(error).__name__}). "
                    "Speech monitoring continues; image ranking will retry.")
+        if is_memory_allocation_error(error):
+            reason = "Low system memory"
+            message = "Windows memory is low. Close unused apps; image ranking will retry automatically."
         from .image_ranking import ClipLoadError
-        if isinstance(error, ClipLoadError):
+        if isinstance(error, ClipLoadError) and reason != "Low system memory":
             message += " " + str(error)
         self.emit("retrieval", {"phase": "error", "found": found, "downloaded": downloaded,
                                 "rejected": 1, "accepted": accepted,
@@ -1369,7 +1449,16 @@ class Pipeline:
             features_failed = False
             try:
                 extract = getattr(ranker, "feedback_vectors", None)
-                vectors = extract(topic, candidate) if extract else None
+                vectors = None
+                if extract and not self.stop_event.is_set():
+                    with self._native_workers_lock:
+                        worker = self._native_workers.get("ranking")
+                    loop = self._loop
+                    if worker is not None and loop is not None and loop.is_running():
+                        pending = asyncio.run_coroutine_threadsafe(worker.run(extract, topic, candidate), loop)
+                        vectors = pending.result()
+                    else:
+                        vectors = extract(topic, candidate)
                 if vectors is not None:
                     result = store.record(topic, candidate, positive, vectors=vectors)
             except Exception as exc:

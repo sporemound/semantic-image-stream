@@ -1,9 +1,14 @@
 """Votes affect real ranking paths without downloading models or changing cutoffs."""
 from dataclasses import replace
+from contextlib import nullcontext
+import sys
 from types import SimpleNamespace
 
+import numpy as np
 from PIL import Image
 import pytest
+
+from test_book_guided_ranking import Tensor as ArrayTensor
 
 from semantic_image_stream.configuration import Settings
 from semantic_image_stream.feedback import FeedbackStore
@@ -34,7 +39,19 @@ def test_saved_votes_personalize_metadata_and_survive_a_new_ranker(tmp_path):
 
 
 def test_pixel_ranking_learns_pair_fit_from_the_full_context_and_respects_encoder_identity(tmp_path, monkeypatch):
-    torch = pytest.importorskip("torch")
+    monkeypatch.setattr("semantic_image_stream.memory_pressure.require_memory", lambda *args, **kwargs: None)
+
+    class TinyTensor(ArrayTensor):
+        def __setitem__(self, index, value):
+            self.values[index] = value
+
+        def __iter__(self):
+            return iter(self.values)
+
+    torch = SimpleNamespace(inference_mode=nullcontext, tensor=TinyTensor,
+                            zeros=lambda size: TinyTensor(np.zeros(size)),
+                            stack=lambda rows: TinyTensor(np.stack([row.values for row in rows])))
+    monkeypatch.setitem(sys.modules, "torch", torch)
     settings = Settings(session_dir=str(tmp_path / "story"), cache_dir=str(tmp_path / "cache"),
                         relevance_threshold=.30, clip_device="cpu")
     ranker = ContextClipRanker(settings)

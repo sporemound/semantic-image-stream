@@ -14,6 +14,12 @@ from .configuration import Settings
 from .models import AudioChunk, TranscriptSegment
 
 log = logging.getLogger(__name__)
+_LARGE_SPEECH_ALIASES = frozenset({"large", "large-v1", "large-v2", "large-v3", "turbo", "large-v3-turbo"})
+
+
+def _speech_load_budget(model):
+    """Estimated loading headroom for trusted aliases, not a footprint guarantee."""
+    return (2 * 1024 * 1024 * 1024 if model in _LARGE_SPEECH_ALIASES else 512 * 1024 * 1024)
 
 
 class TranscriptionCancelled(RuntimeError):
@@ -36,9 +42,22 @@ class FasterWhisperTranscriber:
         self._model = None
         self.device = ""
         self._load_lock = threading.Lock()
+        self._operation_lock = threading.RLock()
 
     def stop(self):
         self._stop.set()
+
+    def close(self):
+        """Release owned model memory after an active native decode has ended.
+
+        This can wait for upstream native work; call it on a cleanup worker.
+        """
+        self.stop()
+        with self._operation_lock:
+            self._model = None
+            self.device = ""
+            self.on_status = lambda message: None
+        gc.collect()
 
     def _check_cancel(self):
         if self._stop.is_set() or self.stop_event.is_set():
@@ -70,6 +89,10 @@ class FasterWhisperTranscriber:
 
     def _construct(self, device):
         self._check_cancel()
+        from .memory_pressure import require_memory
+        # A volatile headroom check, not an exact footprint or model change.
+        # Run before importing native speech libraries under known low memory.
+        require_memory(_speech_load_budget(self.settings.whisper_model), reserve_bytes=128 * 1024 * 1024)
         from faster_whisper import WhisperModel
         from huggingface_hub.utils import LocalEntryNotFoundError
         compute = self.settings.whisper_compute_type
@@ -154,6 +177,15 @@ class FasterWhisperTranscriber:
         return result
 
     def transcribe(self, chunk: AudioChunk) -> list[TranscriptSegment]:
+        self._check_cancel()
+        while not self._operation_lock.acquire(timeout=0.1):
+            self._check_cancel()
+        try:
+            return self._transcribe(chunk)
+        finally:
+            self._operation_lock.release()
+
+    def _transcribe(self, chunk: AudioChunk) -> list[TranscriptSegment]:
         self._check_cancel()
         if chunk.sample_rate != 16000:
             raise ValueError("Transcription requires mono float32 audio at 16000 Hz")

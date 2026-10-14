@@ -1,7 +1,10 @@
 """Injected models validate control flow, not Whisper recognition accuracy."""
 import sys
+import builtins
+import gc
 import threading
 import types
+import weakref
 
 import numpy as np
 import pytest
@@ -9,6 +12,12 @@ import pytest
 from semantic_image_stream.configuration import Settings
 from semantic_image_stream.models import AudioChunk
 from semantic_image_stream.transcription import FasterWhisperTranscriber, TranscriptionCancelled
+
+
+@pytest.fixture(autouse=True)
+def unavailable_host_memory_reading(monkeypatch):
+    # Control-flow tests do not depend on the host's changing commit pressure.
+    monkeypatch.setattr("semantic_image_stream.memory_pressure.available_commit_bytes", lambda: None)
 
 
 def _chunk(start=12):
@@ -236,3 +245,130 @@ def test_exact_overlapping_repeats_are_removed_but_distinct_utterances_remain():
 def test_partially_overlapping_audio_boundaries_preserve_real_speech():
     result = decode_segments([_segment("Opening words", -0.1, 0.2), _segment("Closing words", 0.8, 1.2)])
     assert [(segment.start, segment.end) for segment in result] == [(12, 12.2), (12.8, 13)]
+
+
+def test_close_waits_for_native_decode_and_releases_model_after_stop(monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    model_refs, errors, statuses = [], [], []
+
+    class Model:
+        def __init__(self, *args, **kwargs):
+            model_refs.append(weakref.ref(self))
+
+        def transcribe(self, samples, **kwargs):
+            def decoded():
+                entered.set()
+                assert release.wait(3)
+                yield _segment()
+            return decoded(), types.SimpleNamespace(language="en")
+
+    _install_model(monkeypatch, Model)
+    transcriber = FasterWhisperTranscriber(Settings(whisper_device="cpu"), on_status=statuses.append)
+
+    def decode():
+        try:
+            transcriber.transcribe(_chunk())
+        except TranscriptionCancelled:
+            errors.append(True)
+
+    worker = threading.Thread(target=decode)
+    closer = threading.Thread(target=transcriber.close)
+    worker.start()
+    try:
+        assert entered.wait(3)
+        closer.start()
+        assert transcriber._stop.wait(3)
+        closer.join(.02)
+        assert closer.is_alive() and transcriber._model is not None
+    finally:
+        release.set()
+        worker.join(3)
+        closer.join(3)
+    assert not worker.is_alive() and not closer.is_alive()
+    assert errors == [True] and transcriber._model is None and transcriber.device == ""
+    gc.collect()
+    assert model_refs[0]() is None
+    count = len(statuses)
+    transcriber.on_status("retired callback")
+    assert len(statuses) == count
+    with pytest.raises(TranscriptionCancelled):
+        transcriber.transcribe(_chunk())
+
+
+def test_close_before_loading_is_idempotent_and_never_loads_again(monkeypatch):
+    _install_model(monkeypatch, lambda *args, **kwargs: pytest.fail("Retired speech model was reloaded"))
+    transcriber = FasterWhisperTranscriber(Settings(whisper_device="cpu"))
+    transcriber.close()
+    transcriber.close()
+    assert transcriber._model is None
+    with pytest.raises(TranscriptionCancelled):
+        transcriber.transcribe(_chunk())
+
+
+def test_known_memory_pressure_prevents_native_speech_import_and_construction(monkeypatch):
+    from semantic_image_stream.memory_pressure import MemoryPressureError
+    monkeypatch.setattr("semantic_image_stream.memory_pressure.available_commit_bytes", lambda: 128 * 1024 * 1024)
+    imported = []
+    original = builtins.__import__
+
+    def inspect_import(name, *args, **kwargs):
+        if name == "faster_whisper":
+            imported.append(name)
+            pytest.fail("Known memory pressure reached the native speech import")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", inspect_import)
+    transcriber = FasterWhisperTranscriber(Settings(whisper_model="turbo", whisper_device="cpu"))
+    with pytest.raises(MemoryPressureError):
+        transcriber.transcribe(_chunk())
+    assert imported == [] and transcriber._model is None
+
+
+@pytest.mark.parametrize("available", [None, 3 * 1024 * 1024 * 1024])
+def test_unavailable_or_ample_memory_keeps_selected_speech_quality(monkeypatch, available):
+    monkeypatch.setattr("semantic_image_stream.memory_pressure.available_commit_bytes", lambda: available)
+    calls, decode_options = [], []
+
+    class Model:
+        def __init__(self, model, **kwargs):
+            calls.append((model, kwargs))
+
+        def transcribe(self, samples, **kwargs):
+            decode_options.append(kwargs)
+            return iter([_segment()]), types.SimpleNamespace(language="en")
+
+    _install_model(monkeypatch, Model)
+    transcriber = FasterWhisperTranscriber(Settings(whisper_model="turbo", whisper_device="cpu", language="en"))
+    assert transcriber.transcribe(_chunk())
+    assert calls[0][0] == "turbo" and calls[0][1]["compute_type"] == "int8"
+    assert decode_options[0]["beam_size"] == 3 and decode_options[0]["language"] == "en"
+
+
+@pytest.mark.parametrize("model", ["large", "large-v1", "large-v2", "large-v3", "turbo", "large-v3-turbo"])
+def test_large_aliases_wait_before_constructor_at_small_model_headroom(monkeypatch, model):
+    from semantic_image_stream.memory_pressure import MemoryPressureError
+    monkeypatch.setattr("semantic_image_stream.memory_pressure.available_commit_bytes", lambda: 800 * 1024 * 1024)
+    loaded = []
+    _install_model(monkeypatch, lambda *args, **kwargs: loaded.append(True))
+    transcriber = FasterWhisperTranscriber(Settings(whisper_model=model, whisper_device="cpu"))
+    with pytest.raises(MemoryPressureError):
+        transcriber.transcribe(_chunk())
+    assert loaded == [] and transcriber._model is None
+
+
+@pytest.mark.parametrize("model", ["tiny", "base", "small", "medium", "custom-model", "C:/models/turbo"])
+def test_smaller_or_custom_models_keep_default_budget_without_path_inspection(monkeypatch, model):
+    monkeypatch.setattr("semantic_image_stream.memory_pressure.available_commit_bytes", lambda: 800 * 1024 * 1024)
+    loaded = []
+
+    class Model:
+        def __init__(self, chosen, **kwargs):
+            loaded.append(chosen)
+
+        def transcribe(self, samples, **kwargs):
+            return iter([_segment()]), types.SimpleNamespace(language="en")
+
+    _install_model(monkeypatch, Model)
+    transcriber = FasterWhisperTranscriber(Settings(whisper_model=model, whisper_device="cpu"))
+    assert transcriber.transcribe(_chunk())
+    assert loaded == [model]

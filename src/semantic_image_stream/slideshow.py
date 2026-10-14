@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from collections import deque
+from html import escape
 import random
 import time
 
 from PySide6.QtCore import QObject, QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImageReader, QLinearGradient, QPainter, QPainterPath, QPixmap, QTextLayout, QTextOption
-from PySide6.QtWidgets import QWidget
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImageReader, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QTextLayout, QTextOption
+from PySide6.QtWidgets import QFrame, QTextEdit, QVBoxLayout, QWidget
 
 from .models import ImageCandidate
 
@@ -187,8 +188,39 @@ class ImageCanvas(QWidget):
         self.previous_pixmap = QPixmap()
         self.current_title = ""
         self.current_credit = ""
+        self.current_transcript = ""
+        self._transcript_layout_cache = None
         self.title_overlay_visible = False
         self._title_layout_cache = None
+        self.context_overlay_visible = False
+        self._context_content = None
+        self.context_panel = QFrame(self)
+        self.context_panel.setObjectName("fullscreenContext")
+        self.context_panel.setStyleSheet(
+            "QFrame#fullscreenContext { background: rgba(8, 14, 22, 220); "
+            "border: 1px solid rgba(168, 217, 211, 65); border-radius: 10px; }"
+            "QTextEdit { background: transparent; color: #e4edf5; border: 0; }"
+        )
+        context_layout = QVBoxLayout(self.context_panel)
+        context_layout.setContentsMargins(18, 14, 18, 14)
+        self.context_text = QTextEdit(self.context_panel)
+        self.context_text.setReadOnly(True)
+        self.context_text.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.context_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.context_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.context_text.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        context_layout.addWidget(self.context_text, 1)
+        self.credit_text = QTextEdit(self.context_panel)
+        self.credit_text.setReadOnly(True)
+        self.credit_text.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.credit_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.credit_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.credit_text.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.credit_text.setMinimumHeight(0)
+        self.credit_text.hide()
+        context_layout.addWidget(self.credit_text)
+        self.context_panel.hide()
+        self.set_context("", "", ())
         self.transition = "crossfade"
         self.transition_seconds = 0.8
         self.interval = 9.0
@@ -206,7 +238,79 @@ class ImageCanvas(QWidget):
 
     def set_title_overlay(self, visible: bool) -> None:
         self.title_overlay_visible = bool(visible)
+        self._position_context_panel()
         self.update()
+
+    def set_context_overlay(self, visible: bool) -> None:
+        self.context_overlay_visible = bool(visible)
+        self.context_panel.setVisible(self.context_overlay_visible)
+        if visible:
+            self._position_context_panel()
+            self.context_panel.raise_()
+
+    def set_context(self, summary: str, scene: str, visual_subjects) -> None:
+        """Show accepted live story context as text, with no provider markup or links."""
+        content = (str(summary).strip(), str(scene).strip(), tuple(str(subject) for subject in visual_subjects))
+        if content == self._context_content:
+            return
+        self._context_content = content
+        sections = []
+        for heading, text in (("Narrative context", content[0]), ("Current scene", content[1]),
+                              ("Visual subjects", "\n".join(content[2]))):
+            if text:
+                sections.append(
+                    '<p style="color:#a8d9d3; margin-top:14px; margin-bottom:5px;">'
+                    f'<b>{heading}</b></p><p style="margin-top:0; margin-bottom:0;">'
+                    f'{escape(text).replace(chr(10), "<br>")}</p>'
+                )
+        self.context_text.setHtml("".join(sections) or
+                                 '<p><b>Narrative context</b></p><p>Waiting for interpreted speech.</p>')
+        self.context_text.verticalScrollBar().setValue(0)
+        self._position_context_panel()
+
+    def set_transcript(self, text: str) -> None:
+        """Keep the newest recognized passage as a plain, bounded live subtitle."""
+        text = " ".join(text.split())[-1200:]
+        if text == self.current_transcript:
+            return
+        self.current_transcript = text
+        self._transcript_layout_cache = None
+        self._position_context_panel()
+        self.update()
+
+    def _refresh_credit_panel(self) -> None:
+        self.credit_text.setPlainText(f"Image credits\n{self.current_credit}" if self.current_credit else "")
+        self.credit_text.setVisible(bool(self.current_credit))
+
+    def _position_context_panel(self) -> None:
+        if not self.context_overlay_visible:
+            return
+        margin = max(12, min(64, int(self.width() * .04), int(self.height() * .05)))
+        width = max(1, min(720, self.width() - 2 * margin,
+                           max(340, int(self.width() * .48))))
+        bottom = self.height() - margin
+        if self.title_overlay_visible and self.current_title:
+            bottom = min(bottom, int(self._title_layout()[2].top()) - margin)
+        transcript_layout = self._transcript_layout()
+        if transcript_layout is not None:
+            bottom = min(bottom, int(transcript_layout[2].top()) - margin)
+        height = max(1, min(int(self.height() * .60), bottom - margin))
+        font = QFont("Segoe UI")
+        font.setPixelSize(max(14, min(24, int(self.height() * .024))))
+        if self.context_text.document().defaultFont() != font:
+            self.context_text.setFont(font)
+            self.context_text.document().setDefaultFont(font)
+        credit_font = QFont(font)
+        credit_font.setPixelSize(max(12, min(18, int(self.height() * .021))))
+        if self.credit_text.document().defaultFont() != credit_font:
+            self.credit_text.setFont(credit_font)
+            self.credit_text.document().setDefaultFont(credit_font)
+        self.credit_text.setMaximumHeight(max(28, min(140, int(height * .25))))
+        self.context_panel.setGeometry(margin, margin, width, height)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_context_panel()
 
     def set_image(self, candidate: ImageCandidate | None) -> bool:
         if candidate is None:
@@ -215,7 +319,9 @@ class ImageCanvas(QWidget):
             self.current_pixmap = QPixmap()
             self.current_title = ""
             self.current_credit = ""
+            self._refresh_credit_panel()
             self._title_layout_cache = None
+            self._position_context_panel()
             self.update()
             return True
         reader = QImageReader(str(candidate.path))
@@ -241,7 +347,9 @@ class ImageCanvas(QWidget):
         if rights and not rights.casefold().startswith("unknown"):
             credit.append(rights)
         self.current_credit = " · ".join(credit)[:1200]
+        self._refresh_credit_panel()
         self._title_layout_cache = None
+        self._position_context_panel()
         self._started = time.monotonic()
         random.Random(candidate.image_url).shuffle(self._tiles)
         if self.transition != "cut" and (self.transition == "zoom" or self.transition_seconds > 0):
@@ -278,14 +386,15 @@ class ImageCanvas(QWidget):
         return font
 
     def _title_layout(self):
-        key = self.width(), self.height(), self.current_title, self.current_credit
+        key = self.width(), self.height(), self.current_title, self.current_credit, self.context_overlay_visible
         if self._title_layout_cache is not None and self._title_layout_cache[0] == key:
             return self._title_layout_cache[1]
         margin = self._overlay_margin()
         width = max(1, self.width() - 2 * margin)
         size = max(20, min(76, int(self.height() * .075), int(self.width() * .055)))
-        credit_height = QFontMetricsF(self._credit_font()).height() if self.current_credit else 0
-        credit_gap = max(7, int(self.height() * .012)) if self.current_credit else 0
+        show_credit = self.current_credit and not self.context_overlay_visible
+        credit_height = QFontMetricsF(self._credit_font()).height() if show_credit else 0
+        credit_gap = max(7, int(self.height() * .012)) if show_credit else 0
         option = QTextOption()
         option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         for pixels in range(size, 11, -2):
@@ -319,7 +428,7 @@ class ImageCanvas(QWidget):
         return result
 
     def _credit_layout(self):
-        if not self.current_credit:
+        if not self.current_credit or self.context_overlay_visible:
             return None
         margin = self._overlay_margin()
         width = max(1, self.width() - 2 * margin)
@@ -328,6 +437,64 @@ class ImageCanvas(QWidget):
         text = metrics.elidedText(self.current_credit, Qt.TextElideMode.ElideRight, width)
         bounds = QRectF(margin, self.height() - margin - metrics.height(), width, metrics.height())
         return font, text, bounds
+
+    def _transcript_layout(self):
+        if not self.context_overlay_visible or not self.current_transcript:
+            return None
+        title_top = self._title_layout()[2].top() if self.title_overlay_visible and self.current_title else None
+        key = self.width(), self.height(), self.current_transcript, title_top
+        if self._transcript_layout_cache is not None and self._transcript_layout_cache[0] == key:
+            return self._transcript_layout_cache[1]
+        margin = self._overlay_margin()
+        width = max(1, self.width() - 2 * margin)
+        font = QFont("Arial")
+        font.setStyleHint(QFont.StyleHint.SansSerif)
+        font.setPixelSize(max(16, min(48, int(self.height() * .047), int(self.width() * .04))))
+        option = QTextOption()
+        option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        layout = QTextLayout(self.current_transcript, font)
+        layout.setTextOption(option)
+        layout.beginLayout()
+        lines = []
+        while True:
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(width)
+            lines.append(self.current_transcript[line.textStart():line.textStart() + line.textLength()].strip())
+        layout.endLayout()
+        metrics = QFontMetricsF(font)
+        if len(lines) > 2:
+            lines = lines[-2:]
+            lines[0] = metrics.elidedText("… " + lines[0], Qt.TextElideMode.ElideLeft, width)
+        spacing = metrics.lineSpacing() * 1.05
+        bottom = self.height() - margin
+        if title_top is not None:
+            bottom = min(bottom, title_top - max(12, int(self.height() * .018)))
+        bounds = QRectF(margin, bottom - spacing * len(lines), width, spacing * len(lines))
+        result = font, lines, bounds
+        self._transcript_layout_cache = key, result
+        return result
+
+    def _draw_transcript(self, painter: QPainter) -> None:
+        layout = self._transcript_layout()
+        if layout is None:
+            return
+        font, lines, bounds = layout
+        metrics = QFontMetricsF(font)
+        baseline = bounds.top() + metrics.ascent()
+        path = QPainterPath()
+        for line in lines:
+            left = (self.width() - metrics.horizontalAdvance(line)) / 2
+            path.addText(QPointF(left, baseline), font, line)
+            baseline += metrics.lineSpacing() * 1.05
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        outline = QPen(QColor("#000000"), max(2, font.pixelSize() * .09))
+        outline.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.strokePath(path, outline)
+        painter.fillPath(path, QColor("#ffffff"))
+        painter.restore()
 
     def _draw_title(self, painter: QPainter) -> None:
         if not self.title_overlay_visible or not self.current_title:
@@ -374,6 +541,7 @@ class ImageCanvas(QWidget):
             painter.setPen(QColor("#8697a9"))
             painter.drawText(self.rect().adjusted(30, 30, -30, -30), Qt.AlignmentFlag.AlignCenter,
                              self.empty_message)
+            self._draw_transcript(painter)
             return
         elapsed = time.monotonic() - self._started
         progress = min(1, elapsed / max(0.001, self.transition_seconds))
@@ -397,3 +565,4 @@ class ImageCanvas(QWidget):
         painter.setOpacity(1)
         painter.setClipping(False)
         self._draw_title(painter)
+        self._draw_transcript(painter)

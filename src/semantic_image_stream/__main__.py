@@ -14,6 +14,8 @@ def main(argv=None):
     # Small local feature arrays do not need a large OpenBLAS worker pool.
     # Set this before optional NumPy/SciPy imports; explicit user overrides stay.
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    os.environ.setdefault("OMP_NUM_THREADS", "4")
+    os.environ.setdefault("MKL_NUM_THREADS", "4")
     parser = argparse.ArgumentParser(description="Local speech-driven slideshow of existing, attributed imagery.")
     parser.add_argument("--config", type=Path, help="TOML settings file")
     parser.add_argument("--audio-file", type=Path, help="Replay a real recording instead of live audio")

@@ -74,7 +74,7 @@ def test_votes_save_before_features_and_changed_vote_survives_stop_fifo_and_relo
         assert [event["vote"] for event in events] == [True, False]
         assert all(event["success"] and event["learned"] and event["count"] == 1 for event in events)
         assert len(first) == len(second) == 32 and first != second
-        assert contexts == [visible, visible]
+        assert contexts == [visible], "After Stop, keep the durable vote without loading another native model"
         resumed = Pipeline(configuration, lambda *args: None)
         assert resumed.get_feedback_vote(visible, image) is False
         assert resumed.get_feedback_vote(pipeline._latest_topic, image) is None

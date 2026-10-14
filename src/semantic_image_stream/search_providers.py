@@ -25,7 +25,7 @@ from .models import ImageCandidate
 from .temporal_filter import creation_evidence, extract_depicted_evidence
 
 log = logging.getLogger(__name__)
-USER_AGENT = "SemanticImageStream/0.2.5 (https://github.com/sporemound/semantic-image-stream; https://github.com/sporemound)"
+USER_AGENT = "SemanticImageStream/0.2.6 (https://github.com/sporemound/semantic-image-stream; https://github.com/sporemound)"
 UNKNOWN_LICENSE = "Unknown — check source before reuse"
 MAX_METADATA_BYTES = 2_000_000
 _GENERATED = re.compile(

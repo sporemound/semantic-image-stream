@@ -129,6 +129,7 @@ def pixels(tmp_path):
 
 
 def fixture_ranker(ranker_class, settings, monkeypatch):
+    monkeypatch.setattr("semantic_image_stream.memory_pressure.require_memory", lambda *args, **kwargs: None)
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(inference_mode=nullcontext))
     ranker = ranker_class(settings)
     neutral, arctic = np.eye(512)[:2]

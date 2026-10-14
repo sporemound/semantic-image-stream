@@ -2,6 +2,7 @@
 from __future__ import annotations
 from contextlib import nullcontext
 from pathlib import Path
+import gc
 import hashlib
 import json
 import logging
@@ -11,6 +12,7 @@ import threading
 from urllib.parse import urlsplit
 
 from .models import ImageCandidate, Topic
+from .memory_pressure import PIXEL_MEMORY_LOCK
 from .semantic_analysis import tokens
 
 CLIP_INITIALIZATION_LOCK = threading.Lock()
@@ -210,6 +212,7 @@ class ClipRanker(MetadataRanker):
         self._feedback_encoder_fingerprint = None
         self._manual_text = None
         self._manual_embedding = None
+        self._closed = False
 
     def _windows(self, text):
         tokenizer = self.processor.tokenizer
@@ -222,8 +225,8 @@ class ClipRanker(MetadataRanker):
         import torch
         windows = [window for text in texts for window in self._windows(text)]
         total, weight = None, 0
-        for offset in range(0, len(windows), 16):
-            batch = windows[offset:offset + 16]
+        for offset in range(0, len(windows), 4):
+            batch = windows[offset:offset + 4]
             # Exact IDs preserve all supplied tokens without re-tokenization.
             prepared = [self.processor.tokenizer.prepare_for_model(ids, add_special_tokens=True,
                         return_attention_mask=True, truncation=False) for ids, _ in batch]
@@ -250,6 +253,45 @@ class ClipRanker(MetadataRanker):
             self._manual_text = text
         return self._manual_embedding
 
+    def _image_batch_size(self):
+        return 1 if self.device == "cpu" else 4
+
+    def close(self):
+        # Ranking and feedback use this same lock. Wait for their actual native
+        # operation to finish before releasing tensors, even after UI Stop.
+        self._closed = True
+        with self._rank_lock:
+            self.model = self.processor = None
+            self._manual_text = self._manual_embedding = None
+            self._feedback_encoder_fingerprint = self._encoder_snapshot = None
+            if hasattr(self, "_history"):
+                self._history, self._history_sum, self._history_weight = (), None, 0
+            if hasattr(self, "_adapter"):
+                self._adapter = None
+            gc.collect()
+
+    def _require_active(self):
+        if self._closed:
+            raise ClipLoadError("This image ranking worker has stopped; restart monitoring to resume.")
+
+    @staticmethod
+    def _require_memory(estimated_bytes):
+        from .memory_pressure import MemoryPressureError, require_memory
+        try:
+            require_memory(estimated_bytes, reserve_bytes=134_217_728)
+        except MemoryPressureError as error:
+            raise ClipLoadError("Windows is low on available memory; close unused apps; "
+                                "image monitoring will retry automatically.") from error
+
+    @classmethod
+    def _require_load_memory(cls):
+        cls._require_memory(1_073_741_824)
+
+    @classmethod
+    def _require_pixel_memory(cls, images):
+        # The slow processor constructs full-size NumPy copies before resizing.
+        cls._require_memory(sum(image.width * image.height for image in images) * 12)
+
     def _feedback_fingerprint(self):
         if self._feedback_encoder_fingerprint is None:
             self._feedback_encoder_fingerprint = _fingerprint_snapshot(self._encoder_snapshot)
@@ -268,14 +310,16 @@ class ClipRanker(MetadataRanker):
                                  context.detach().cpu().numpy(), fingerprint)
 
     def feedback_vectors(self, topic, candidate):
-        import torch
         from PIL import Image
         access = self.gpu_lock if self.settings.clip_device == "cuda" else nullcontext()
-        with self._rank_lock, access:
+        with self._rank_lock, access, PIXEL_MEMORY_LOCK:
+            self._require_active()
             if self.model is None:
                 self._load(local_only=True)
+            import torch
             with Image.open(candidate.path) as source:
                 with source.convert("RGB") as raster:
+                    self._require_pixel_memory((raster,))
                     inputs = self.processor(text=[topic.query], images=[raster], return_tensors="pt",
                                             padding=True, truncation=True)
                     inputs = {key: value.to(self.device) for key, value in inputs.items()}
@@ -293,30 +337,41 @@ class ClipRanker(MetadataRanker):
                     "encoder_fingerprint": _context_fingerprint(self._feedback_fingerprint(), self.name, topic, self.settings)}
 
     def _load(self, local_only=False, snapshot=None):
-        try:
-            import torch
-            from transformers import CLIPModel, CLIPProcessor
-        except ImportError as exc:
-            raise RuntimeError("Local CLIP ranking requires installing semantic-image-stream[clip].") from exc
-        self.device = self.settings.clip_device
-        if self.device == "cuda" and not torch.cuda.is_available():
-            self.device = "cpu"
-        # No remote custom code is allowed. Model weights are fetched once.
-        model_cache = str(Path(self.settings.cache_dir) / "models" / "clip")
-        # Resolve an already complete snapshot before consulting the network.
-        # A newer partial snapshot must not hide the installed usable weights.
-        complete = snapshot if snapshot is not None else _cached_encoder_snapshot(self.settings)
-        if local_only and complete is None:
-            raise RuntimeError("The frozen CLIP encoder is not cached locally. Install its weights before local relevance training.")
-        source = str(complete) if complete else self.settings.clip_model
-        options = dict(cache_dir=model_cache, trust_remote_code=False, local_files_only=complete is not None)
-        model_options = {"use_safetensors": (complete / "model.safetensors").is_file()} if complete else {}
         # Transformers' empty-weight initialization temporarily changes global
         # torch parameter constructors. Different stopped/current CPU workers
         # must never overlap those constructors or leave loaded weights on meta.
         with CLIP_INITIALIZATION_LOCK:
+            self._require_active()
             if self.model is not None:
                 return
+            # Resolve the cache without importing native libraries. A cached
+            # model still needs headroom for weights and temporary workspaces.
+            complete = snapshot if snapshot is not None else _cached_encoder_snapshot(self.settings)
+            if local_only and complete is None:
+                raise RuntimeError("The frozen CLIP encoder is not cached locally. Install its weights before local relevance training.")
+            if self.settings.clip_device == "cpu":
+                self._require_load_memory()
+            try:
+                import torch
+                from transformers import CLIPModel, CLIPProcessor
+            except ImportError as exc:
+                raise RuntimeError("Local CLIP ranking requires installing semantic-image-stream[clip].") from exc
+            self.device = self.settings.clip_device
+            if self.device == "cuda" and not torch.cuda.is_available():
+                self._require_load_memory()
+                self.device = "cpu"
+            # No remote custom code is allowed. Model weights are fetched once.
+            model_cache = str(Path(self.settings.cache_dir) / "models" / "clip")
+            source = str(complete) if complete else self.settings.clip_model
+            options = dict(cache_dir=model_cache, trust_remote_code=False, local_files_only=complete is not None)
+            model_options = {"use_safetensors": (complete / "model.safetensors").is_file()} if complete else {}
+            if self.device == "cpu":
+                get_threads = getattr(torch, "get_num_threads", None)
+                set_threads = getattr(torch, "set_num_threads", None)
+                if callable(get_threads) and callable(set_threads) and get_threads() > 4:
+                    # Bound native workspaces alongside the speech/story models;
+                    # retain an explicitly smaller existing CPU thread count.
+                    set_threads(4)
             self.processor = None
             try:
                 processor = CLIPProcessor.from_pretrained(source, use_fast=False, **options)
@@ -342,7 +397,6 @@ class ClipRanker(MetadataRanker):
             self._encoder_snapshot = complete or _cached_encoder_snapshot(self.settings)
 
     def rank(self, topic, candidates, recent):
-        import torch
         from PIL import Image
         candidates = [c for c in candidates if not is_duplicate(c.phash, recent)]
         if not candidates:
@@ -350,39 +404,45 @@ class ClipRanker(MetadataRanker):
         # CPU model loading/inference must never pause CUDA speech recognition.
         # In particular, a stopped CPU model download can outlive its session.
         access = self.gpu_lock if self.settings.clip_device == "cuda" else nullcontext()
-        with self._rank_lock, access:
+        with self._rank_lock, access, PIXEL_MEMORY_LOCK:
+            self._require_active()
             if self.model is None:
                 self._load()
+            import torch
             similarities = []
             pixel_vectors, text_vector = [], None
             personalizing = self._has_feedback()
             guide, book, _ = _book_components(topic, self.settings)
             manual = self._manual_vector(guide) if book else None
             # Small batches keep RAM/VRAM bounded. CPU is the default for CLIP.
-            for offset in range(0, len(candidates), 4):
-                batch = candidates[offset:offset + 4]
+            batch_size = self._image_batch_size()
+            for offset in range(0, len(candidates), batch_size):
+                batch = candidates[offset:offset + batch_size]
                 images = []
-                for c in batch:
-                    with Image.open(Path(c.local_path)) as im:
-                        images.append(im.convert("RGB"))
-                inputs = self.processor(text=[topic.query], images=images, return_tensors="pt", padding=True, truncation=True)
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
-                with torch.inference_mode():
-                    # logits include a learned scale; divide it out to get cosine.
-                    out = self.model(**inputs)
-                    scores = out.logits_per_image[:, 0] / self.model.logit_scale.exp()
-                    if manual is not None:
-                        scores = scores * (1 - book) + (out.image_embeds @ manual) * book
-                similarities.extend(scores.detach().cpu().tolist())
-                if personalizing:
-                    pixel_vectors.extend(out.image_embeds.detach().cpu().tolist())
-                    context = out.text_embeds[0]
-                    if manual is not None:
-                        context = context * (1 - book) + manual * book
-                        context = context / context.norm().clamp_min(1e-8)
-                    text_vector = context.detach().cpu().tolist()
-                for im in images:
-                    im.close()
+                try:
+                    for c in batch:
+                        with Image.open(Path(c.local_path)) as im:
+                            images.append(im.convert("RGB"))
+                    self._require_pixel_memory(images)
+                    inputs = self.processor(text=[topic.query], images=images, return_tensors="pt", padding=True, truncation=True)
+                    inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                    with torch.inference_mode():
+                        # logits include a learned scale; divide it out to get cosine.
+                        out = self.model(**inputs)
+                        scores = out.logits_per_image[:, 0] / self.model.logit_scale.exp()
+                        if manual is not None:
+                            scores = scores * (1 - book) + (out.image_embeds @ manual) * book
+                    similarities.extend(scores.detach().cpu().tolist())
+                    if personalizing:
+                        pixel_vectors.extend(out.image_embeds.detach().cpu().tolist())
+                        context = out.text_embeds[0]
+                        if manual is not None:
+                            context = context * (1 - book) + manual * book
+                            context = context / context.norm().clamp_min(1e-8)
+                        text_vector = context.detach().cpu().tolist()
+                finally:
+                    for im in images:
+                        im.close()
         for c, similarity in zip(candidates, similarities):
             # Threshold keeps its meaning as approximate cosine relevance.
             quality = min(1, (c.width * c.height) / 2_000_000)
@@ -456,19 +516,21 @@ class ContextClipRanker(ClipRanker):
         return vector / vector.norm().clamp_min(1e-8)
 
     def feedback_vectors(self, topic, candidate):
-        import torch
         from PIL import Image
         access = self.gpu_lock if self.settings.clip_device == "cuda" else nullcontext()
-        with self._rank_lock, access:
+        with self._rank_lock, access, PIXEL_MEMORY_LOCK:
+            self._require_active()
             if self.model is None:
                 if _cached_encoder_snapshot(self.settings) is None:
                     raise RuntimeError("Feedback learning needs the locally cached image model.")
                 self._load()
+            import torch
             contexts = self._context_vectors(topic)
             if not contexts:
                 raise RuntimeError("Feedback learning needs an established spoken context.")
             with Image.open(candidate.path) as source:
                 with source.convert("RGB") as raster:
+                    self._require_pixel_memory((raster,))
                     inputs = self.processor(images=[raster], return_tensors="pt")
                     inputs = {key: value.to(self.device) for key, value in inputs.items()}
                     with torch.inference_mode():
@@ -479,25 +541,28 @@ class ContextClipRanker(ClipRanker):
                     "encoder_fingerprint": _context_fingerprint(self._feedback_fingerprint(), self.name, topic, self.settings)}
 
     def rank(self, topic, candidates, recent):
-        import torch
         from PIL import Image
         candidates = [candidate for candidate in candidates if not is_duplicate(candidate.phash, recent)]
         if not candidates:
             return []
         access = self.gpu_lock if self.settings.clip_device == "cuda" else nullcontext()
-        with self._rank_lock, access:
+        with self._rank_lock, access, PIXEL_MEMORY_LOCK:
+            self._require_active()
             if self.model is None:
                 self._load()
+            import torch
             contexts = self._context_vectors(topic)
             if not contexts:
                 return []
-            for offset in range(0, len(candidates), 4):
-                batch = candidates[offset:offset + 4]
+            batch_size = self._image_batch_size()
+            for offset in range(0, len(candidates), batch_size):
+                batch = candidates[offset:offset + batch_size]
                 images = []
                 try:
                     for candidate in batch:
                         with Image.open(Path(candidate.local_path)) as original:
                             images.append(original.convert("RGB"))
+                    self._require_pixel_memory(images)
                     inputs = self.processor(images=images, return_tensors="pt")
                     inputs = {key: value.to(self.device) for key, value in inputs.items()}
                     with torch.inference_mode():
@@ -529,6 +594,7 @@ class LearnedContextRanker(ContextClipRanker):
     def _load(self):
         from .learned_relevance import AdapterError
 
+        self._require_active()
         self._load_adapter()
         expected = self._adapter.artifact.get("metadata", {}).get("encoder_fingerprint")
         if not isinstance(expected, str) or not re.fullmatch(r"[a-f0-9]{64}", expected):
@@ -560,7 +626,6 @@ class LearnedContextRanker(ContextClipRanker):
 def embed_pairs(settings, image_paths, texts, gpu_lock=None):
     """Extract training vectors from the already cached encoder, without downloads."""
     import numpy as np
-    import torch
     from PIL import Image
     from .learned_relevance import AdapterError, EMBEDDING_DIM, MAX_SAMPLES
 
@@ -571,14 +636,17 @@ def embed_pairs(settings, image_paths, texts, gpu_lock=None):
     ranker = ContextClipRanker(settings, gpu_lock)
     image_vectors, text_vectors = [], []
     access = ranker.gpu_lock if settings.clip_device == "cuda" else nullcontext()
-    with access:
+    with access, PIXEL_MEMORY_LOCK:
         ranker._load(local_only=True)
-        for offset in range(0, len(paths), 4):
+        import torch
+        batch_size = ranker._image_batch_size()
+        for offset in range(0, len(paths), batch_size):
             images = []
             try:
-                for path in paths[offset:offset + 4]:
+                for path in paths[offset:offset + batch_size]:
                     with Image.open(path) as source:
                         images.append(source.convert("RGB"))
+                ranker._require_pixel_memory(images)
                 inputs = ranker.processor(images=images, return_tensors="pt")
                 inputs = {key: value.to(ranker.device) for key, value in inputs.items()}
                 with torch.inference_mode():
