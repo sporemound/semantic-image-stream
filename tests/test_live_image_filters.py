@@ -243,8 +243,9 @@ async def test_live_range_change_during_ranking_cannot_publish_old_image(tmp_pat
         ranker = ChangingRanker()
         published, failed = await pipeline._evaluate_candidates(topic, [candidate], None, None,
             None, ranker, cache, {}, Counter(), {"found": 0, "downloaded": 0, "best_score": None})
-        assert not published and not failed and ranker.calls == 2
+        assert not published and not failed and ranker.calls == 1
         assert not any(kind == "images" for kind, _ in events)
+        assert not pipeline.session_state.image_matches
         assert pipeline._latest_topic is topic and len(pipeline.session_state.segments) == 1
     finally:
         cache.close()

@@ -139,6 +139,47 @@ def _generated_status(row: dict, *values: Any) -> bool | None:
     return False if known_negative else None
 
 
+def _mature_status(*rows: dict) -> bool | None:
+    """Use explicit source classifications; an unmarked result remains unknown."""
+    known_negative = False
+    for row in rows:
+        for key in ("mature_content", "mature", "is_mature", "nsfw", "is_nsfw", "is_adult"):
+            value = row.get(key)
+            if isinstance(value, str):
+                value = value.strip().casefold()
+                if value in {"true", "yes", "1"}:
+                    return True
+                known_negative = known_negative or value in {"false", "no", "0"}
+            elif value is True or (type(value) is int and value == 1):
+                return True
+            elif value is False or (type(value) is int and value == 0):
+                known_negative = True
+        sensitivity = row.get("unstable__sensitivity")
+        if isinstance(sensitivity, list) and any(
+            isinstance(marker, str) and marker in {
+                "provider_supplied_sensitive", "user_reported_sensitive", "sensitive_text"
+            } for marker in sensitivity
+        ):
+            return True
+    return False if known_negative else None
+
+
+def _explicit_mature_labels(*values: Any) -> bool | None:
+    """Recognize definite source labels without guessing from narrative words."""
+    labels = {"nsfw", "nudity", "nude art", "pornography", "explicit sexual content",
+              "mature content", "adult content", "sexual content"}
+    for value in values:
+        if isinstance(value, list):
+            if any(_explicit_mature_labels(item) is True for item in value[:200]):
+                return True
+        elif isinstance(value, str):
+            # Source categories commonly arrive as semicolon-separated labels.
+            if any(label.strip().casefold().removeprefix("category:") in labels
+                   for label in value.split(";")):
+                return True
+    return None
+
+
 def _https_url(value: Any) -> str:
     if not isinstance(value, str) or len(value) > 4096:
         return ""
@@ -263,6 +304,11 @@ class WikimediaProvider(_HTTPProvider):
             generated = _generated_status(page, title, *fields.values())
             if generated is True and getattr(self.settings, "exclude_ai_generated", True):
                 continue
+            mature = _mature_status(page, info)
+            if _explicit_mature_labels(fields.get("Categories")) is True:
+                mature = True
+            if mature is True and not getattr(self.settings, "allow_nsfw", False):
+                continue
             image_url = _https_url(info.get("thumburl")) or _https_url(info.get("url"))
             source_url = _source_url(info.get("descriptionurl"))
             original_mime = info.get("mime")
@@ -283,6 +329,7 @@ class WikimediaProvider(_HTTPProvider):
                 width=_dimension(info.get("thumbwidth") or info.get("width")),
                 height=_dimension(info.get("thumbheight") or info.get("height")),
                 ai_generated=generated,
+                mature_content=mature,
                 # DateTimeOriginal is the documented original creation date.
                 # Commons upload/revision timestamps cannot date a subject.
                 temporal_evidence=(creation_evidence(fields.get("DateTimeOriginal", ""), "Commons DateTimeOriginal")
@@ -298,7 +345,8 @@ class OpenverseProvider(_HTTPProvider):
     name = "openverse"
 
     async def _search(self, query: str, limit: int, page: int = 0) -> list[ImageCandidate]:
-        params = {"q": query, "page_size": limit}
+        params = {"q": query, "page_size": limit,
+                  "mature": "true" if getattr(self.settings, "allow_nsfw", False) else "false"}
         if page:
             params["page"] = page + 1
         data = await self._json("https://api.openverse.org/v1/images/", params)
@@ -308,6 +356,9 @@ class OpenverseProvider(_HTTPProvider):
             tags = "; ".join(plain_text(tag.get("name")) for tag in _rows(row.get("tags")))
             generated = _generated_status(row, title, row.get("description"), row.get("creator"), tags)
             if generated is True and getattr(self.settings, "exclude_ai_generated", True):
+                continue
+            mature = _mature_status(row)
+            if mature is True and not getattr(self.settings, "allow_nsfw", False):
                 continue
             image_url, source_url = _https_url(row.get("url")), _source_url(row.get("foreign_landing_url"))
             if not image_url or not source_url:
@@ -322,6 +373,7 @@ class OpenverseProvider(_HTTPProvider):
                 description=plain_text(row.get("description")) or tags,
                 width=_dimension(row.get("width")), height=_dimension(row.get("height")),
                 ai_generated=generated,
+                mature_content=mature,
                 # Catalog indexing dates are not creation dates. Use only
                 # explicitly dated depicted-subject metadata from this API.
                 temporal_evidence=extract_depicted_evidence(title, plain_text(row.get("description")), tags,
@@ -383,6 +435,11 @@ class InternetArchiveProvider(_HTTPProvider):
         generated = _generated_status(metadata, title, description, metadata.get("subject"), metadata.get("creator"))
         if generated is True and getattr(self.settings, "exclude_ai_generated", True):
             return []
+        item_mature = _mature_status(metadata)
+        if _explicit_mature_labels(metadata.get("subject")) is True:
+            item_mature = True
+        if item_mature is True and not getattr(self.settings, "allow_nsfw", False):
+            return []
         license_url = _source_url(metadata.get("licenseurl"))
         candidates = []
         for file in _rows(data.get("files")):
@@ -400,6 +457,11 @@ class InternetArchiveProvider(_HTTPProvider):
                 file_generated = generated
             if file_generated is True and getattr(self.settings, "exclude_ai_generated", True):
                 continue
+            mature = _mature_status(file)
+            if item_mature is True or mature is None:
+                mature = item_mature
+            if mature is True and not getattr(self.settings, "allow_nsfw", False):
+                continue
             candidates.append(ImageCandidate(
                 image_url=f"https://archive.org/download/{quote(identifier, safe='')}/{quote(name, safe='')}",
                 source_url=f"https://archive.org/details/{quote(identifier, safe='')}",
@@ -408,6 +470,7 @@ class InternetArchiveProvider(_HTTPProvider):
                 license_url=license_url, description=description,
                 width=_dimension(file.get("width")), height=_dimension(file.get("height")),
                 ai_generated=file_generated,
+                mature_content=mature,
                 # Item date is the original date/published field; addeddate
                 # and publicdate describe archive ingest and stay unused.
                 temporal_evidence=(creation_evidence(plain_text(metadata.get("date")), "Internet Archive item date")
@@ -421,6 +484,17 @@ def _duckduckgo_client_factory():
     # Import the real implementation lazily: DDGS's top-level lazy proxy
     # returns the base class when subclassed, bypassing this override.
     from ddgs.ddgs import DDGS
+
+    def safe_bing_payload(original):
+        def build_payload(*args, **kwargs):
+            payload = original(*args, **kwargs)
+            # DDGS 9.16 accepts safesearch but its Bing adapter ignores it.
+            # Pass the source preference explicitly without changing accounts,
+            # regional restrictions, request headers, or the rest of the query.
+            safesearch = kwargs.get("safesearch", args[2] if len(args) > 2 else "moderate")
+            payload["adlt"] = "off" if safesearch == "off" else "strict"
+            return payload
+        return build_payload
 
     class DuckDuckGoClient(DDGS):
         def images(self, query, **kwargs):
@@ -463,6 +537,13 @@ def _duckduckgo_client_factory():
                         # Connection: keep-alive is legal HTTP/1.1, but causes
                         # native HTTP/2 clients to reject these image requests.
                         native.headers = cleaned
+            elif category == "images" and backend == "bing":
+                for engine in engines:
+                    if engine.name != "bing":
+                        raise ProviderError("The requested Bing image backend is unavailable")
+                    if not getattr(engine, "_sis_safesearch_payload", False):
+                        engine.build_payload = safe_bing_payload(engine.build_payload)
+                        engine._sis_safesearch_payload = True
             return engines
 
     return DuckDuckGoClient
@@ -501,6 +582,9 @@ class DuckDuckGoProvider:
             generated = _generated_status(row, title, row.get("source"), row.get("description"))
             if generated is True and getattr(self.settings, "exclude_ai_generated", True):
                 continue
+            mature = _mature_status(row)
+            if mature is True and not getattr(self.settings, "allow_nsfw", False):
+                continue
             image_url, source_url = _https_url(row.get("image")), _source_url(row.get("url"))
             if not image_url or not source_url:
                 continue
@@ -511,6 +595,7 @@ class DuckDuckGoProvider:
                 description=plain_text(row.get("description")),
                 width=_dimension(row.get("width")), height=_dimension(row.get("height")),
                 ai_generated=generated,
+                mature_content=mature,
                 temporal_evidence=extract_depicted_evidence(title, plain_text(row.get("description")),
                                                             source=f"{provider} subject metadata"),
             ))
@@ -520,7 +605,8 @@ class DuckDuckGoProvider:
         from .ddgs_worker import MAX_INPUT_BYTES, MAX_OUTPUT_BYTES
 
         request = json.dumps({"query": query, "limit": requested,
-                              "timeout": self.settings.download_timeout}).encode("utf-8")
+                              "timeout": self.settings.download_timeout,
+                              "allow_nsfw": bool(getattr(self.settings, "allow_nsfw", False))}).encode("utf-8")
         if len(request) > MAX_INPUT_BYTES:
             raise ProviderError("duckduckgo worker request exceeded the supported bound")
         self._inflight = True
@@ -590,7 +676,9 @@ class DuckDuckGoProvider:
         def run() -> None:
             try:
                 engine = self._factory(timeout=self.settings.download_timeout)
-                value = engine.images(query, max_results=requested, safesearch="moderate", backend="duckduckgo")
+                value = engine.images(query, max_results=requested,
+                                      safesearch="off" if getattr(self.settings, "allow_nsfw", False) else "moderate",
+                                      backend="duckduckgo")
                 error = None
             except Exception as exception:
                 value, error = None, exception

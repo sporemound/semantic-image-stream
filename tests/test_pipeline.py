@@ -29,7 +29,8 @@ async def test_duckduckgo_header_fix_refreshes_old_partial_searches_once_without
     cache = Cache(settings)
     old = ImageCandidate(image_url="https://photos.example.org/old.jpg", source_url="https://museum.example.org/old",
                          title="Previous partial result", provider="wikimedia")
-    legacy_key = json.dumps(["earth orbit", selected, settings.results_per_provider])
+    legacy_key = json.dumps(["earth orbit", selected, settings.results_per_provider,
+                            {"content_policy": "mature-v1", "allow_nsfw": settings.allow_nsfw}])
     cache.put_query(legacy_key, [old])
     cache.record(old)
     calls = []

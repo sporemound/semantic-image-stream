@@ -57,20 +57,23 @@ def _load_factory():
 
 
 def _run_request(request):
-    if not isinstance(request, dict) or set(request) != {"query", "limit", "timeout"}:
+    required = {"query", "limit", "timeout"}
+    if (not isinstance(request, dict) or not required <= set(request)
+            or not set(request) <= required | {"allow_nsfw"}):
         raise ValueError("Invalid worker request")
     query, limit, timeout = request["query"], request["limit"], request["timeout"]
+    allow_nsfw = request.get("allow_nsfw", False)
     if (not isinstance(query, str) or not query.strip() or len(query) > 180
             or type(limit) is not int or not 1 <= limit <= 200
             or isinstance(timeout, bool) or not isinstance(timeout, (int, float))
-            or not math.isfinite(timeout) or timeout <= 0):
+            or not math.isfinite(timeout) or timeout <= 0 or type(allow_nsfw) is not bool):
         raise ValueError("Invalid worker request")
-    from .search_providers import _dimension, _generated_status, _rows, plain_text, sanitize_query
+    from .search_providers import _dimension, _generated_status, _mature_status, _rows, plain_text, sanitize_query
     query = sanitize_query(query)
     if not query:
         raise ValueError("Invalid worker request")
     engine = _load_factory()(timeout=timeout)
-    rows = engine.images(query, max_results=limit, safesearch="moderate", backend="duckduckgo")
+    rows = engine.images(query, max_results=limit, safesearch="off" if allow_nsfw else "moderate", backend="duckduckgo")
     if not isinstance(rows, list):
         raise ValueError("Invalid worker result")
     # Native source dictionaries may contain extra or excessive fields. Only
@@ -85,6 +88,9 @@ def _run_request(request):
         generated = _generated_status(row, row.get("title"), row.get("source"), row.get("description"))
         if generated is not None:
             bounded["ai_generated"] = generated
+        mature = _mature_status(row)
+        if mature is not None:
+            bounded["mature_content"] = mature
         result.append(bounded)
     return result
 

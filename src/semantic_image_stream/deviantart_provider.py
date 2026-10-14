@@ -10,6 +10,7 @@ from .search_providers import (
     ProviderError,
     _HTTPProvider,
     _dimension,
+    _explicit_mature_labels,
     _generated_status,
     _https_url,
     _source_url,
@@ -24,6 +25,25 @@ DC = "{http://purl.org/dc/elements/1.1/}"
 def _text(node: ET.Element, path: str) -> str:
     child = node.find(path)
     return child.text if child is not None and isinstance(child.text, str) else ""
+
+
+def _mature_rating(item: ET.Element) -> bool | None:
+    """Read documented Media RSS ratings without inventing an RSS access flag."""
+    known_negative = False
+    for node in item.findall(f".//{MEDIA}rating"):
+        scheme = node.get("scheme", "urn:simple").casefold()
+        if scheme != "urn:simple":
+            continue
+        rating = plain_text(node.text, max_length=40).casefold()
+        if rating == "adult":
+            return True
+        known_negative = known_negative or rating == "nonadult"
+    for node in item.findall(f".//{MEDIA}adult"):
+        rating = plain_text(node.text, max_length=40).casefold()
+        if rating == "true":
+            return True
+        known_negative = known_negative or rating == "false"
+    return False if known_negative else None
 
 
 class DeviantArtProvider(_HTTPProvider):
@@ -84,6 +104,11 @@ class DeviantArtProvider(_HTTPProvider):
             generated = _generated_status({}, title, description, tags)
             if generated is True and getattr(self.settings, "exclude_ai_generated", True):
                 continue
+            mature = _mature_rating(item)
+            if _explicit_mature_labels(tags) is True:
+                mature = True
+            if mature is True and not getattr(self.settings, "allow_nsfw", False):
+                continue
 
             assets = []
             for node in item.findall(f".//{MEDIA}content"):
@@ -121,6 +146,7 @@ class DeviantArtProvider(_HTTPProvider):
                 width=width,
                 height=height,
                 ai_generated=generated,
+                mature_content=mature,
                 temporal_evidence=extract_depicted_evidence(
                     title,
                     description,

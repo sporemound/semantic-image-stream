@@ -37,6 +37,7 @@ class Settings:
     time_filter_scale: str = "calendar"
     time_filter_include_undated: bool = False
     exclude_ai_generated: bool = True
+    allow_nsfw: bool = False
     semantic_provider: str = "contextual"
     context_model: str = "qwen2.5:7b"
     book_context: str = ""
@@ -63,6 +64,12 @@ class Settings:
     transition: str = "crossfade"
     transition_seconds: float = 0.8
     attribution_visible: bool = True
+    fullscreen_narrative: bool = True
+    fullscreen_scene: bool = True
+    fullscreen_subjects: bool = True
+    fullscreen_title: bool = True
+    fullscreen_credits: bool = True
+    fullscreen_transcript: bool = True
     display_index: int = 0
     cache_dir: str = field(default_factory=default_data_dir)
     cache_ttl_hours: float = 24.0
@@ -132,7 +139,9 @@ class Settings:
             raise ValueError("training_dir must name a local folder")
         if not isinstance(self.use_story_examples, bool):
             raise ValueError("use_story_examples must be true or false")
-        for key in ("time_filter_enabled", "time_filter_include_undated", "exclude_ai_generated"):
+        for key in ("time_filter_enabled", "time_filter_include_undated", "exclude_ai_generated", "allow_nsfw",
+                    "fullscreen_narrative", "fullscreen_scene", "fullscreen_subjects", "fullscreen_title",
+                    "fullscreen_credits", "fullscreen_transcript"):
             if not isinstance(getattr(self, key), bool):
                 raise ValueError(f"{key} must be true or false")
         for key in ("time_filter_start", "time_filter_end"):

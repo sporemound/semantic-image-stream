@@ -52,6 +52,7 @@ class Ranker:
 
 def key(pipeline, query, page=0):
     identity = [query.casefold(), pipeline.settings.providers, pipeline.settings.results_per_provider]
+    identity.append({"content_policy": "mature-v1", "allow_nsfw": pipeline.settings.allow_nsfw})
     if page:
         identity.append({"page": page})
     return json.dumps(identity)

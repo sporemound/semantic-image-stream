@@ -25,7 +25,7 @@ _NATIVE_RETIREMENT_LOCK = threading.Lock()
 _NATIVE_RETIREMENT_EVENTS = []
 _SOURCE_PAUSED = object()
 IMAGE_FILTER_FIELDS = ("time_filter_enabled", "time_filter_target", "time_filter_start", "time_filter_end",
-                       "time_filter_scale", "time_filter_include_undated", "exclude_ai_generated")
+                       "time_filter_scale", "time_filter_include_undated", "exclude_ai_generated", "allow_nsfw")
 
 
 def _interpreter_key(settings):
@@ -58,6 +58,7 @@ class SessionState:
     guidance_draft_marker: str = ""
     guidance_draft_revision: int = 0
     analyzer_checkpoint: dict | None = None
+    image_matches: dict[str, dict] = field(default_factory=dict)
     on_change: Callable[["SessionState"], None] | None = None
 
     def notify_changed(self):
@@ -253,10 +254,10 @@ class Pipeline:
 
         def apply():
             from .temporal_filter import filter_identity
-            previous = (filter_identity(self.settings), self.settings.exclude_ai_generated)
+            previous = (filter_identity(self.settings), self.settings.exclude_ai_generated, self.settings.allow_nsfw)
             for name, value in values.items():
                 setattr(self.settings, name, value)
-            if previous == (filter_identity(self.settings), self.settings.exclude_ai_generated):
+            if previous == (filter_identity(self.settings), self.settings.exclude_ai_generated, self.settings.allow_nsfw):
                 return
             self._restart_image_discovery()
             self._emit_context("ready", "Image filters updated; the spoken story is retained.", playback_changed=True)
@@ -267,9 +268,50 @@ class Pipeline:
         else:
             apply()
 
+    def refresh_images(self):
+        """Refresh the current scene without resetting speech or source cooldowns."""
+        if not self._latest_topic or not self._latest_topic.query:
+            return False
+
+        def apply():
+            topic = self._latest_topic
+            if not topic or not topic.query or self.stop_event.is_set():
+                return
+            from .book_guidance import guided_queries
+            queries = list(guided_queries(topic, self.settings))
+            for alternative in fallback_queries(topic):
+                queries.extend(guided_queries(replace(topic, query=alternative), self.settings))
+            queries.append(sanitize_query(topic.query))
+            for query in queries:
+                if query:
+                    key = query.casefold()
+                    self._query_pages[key] = 0
+                    self._refresh_queries.add(key)
+            # Fence obsolete requests and ranking before fetching fresh head
+            # pages. Durable displayed fingerprints and story state are retained.
+            self._image_filter_revision += 1
+            self._generation += 1
+            self._approved_images.clear()
+            self._last_search = 0.0
+            pending = getattr(self, "topic_queue", None)
+            if pending is not None:
+                while not pending.empty():
+                    pending.get_nowait()
+                pending.put_nowait((self._generation, topic))
+            self.emit("status", "Refreshing images for the current scene…")
+
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(apply)
+        else:
+            apply()
+        return True
+
     def _image_filter_match(self, candidate):
         from .search_providers import is_known_generated
         from .temporal_filter import filter_match
+        if not self.settings.allow_nsfw and getattr(candidate, "mature_content", None) is True:
+            return False, "Marked as mature content"
         if (self.settings.exclude_ai_generated
                 and (getattr(candidate, "ai_generated", None) is True
                      or is_known_generated(candidate.title, candidate.description))):
@@ -280,6 +322,10 @@ class Pipeline:
     @property
     def running(self):
         return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def image_request_revision(self):
+        return self._image_filter_revision
 
     def emit(self, name, value=None):
         try:
@@ -912,13 +958,20 @@ class Pipeline:
                 if len(self._approved_images) >= self.settings.prefetch_count:
                     continue
                 generation = self._generation
-            delay = self.settings.search_interval - (time.monotonic() - self._last_search)
-            if delay > 0:
-                await asyncio.sleep(delay)
+            last_search = self._last_search
+            delay = self.settings.search_interval - (time.monotonic() - last_search)
+            while delay > 0 and not self.stop_event.is_set():
+                # Stop and an explicit refresh should wake a provider cooldown.
+                pause = min(.1, delay)
+                await asyncio.sleep(pause)
+                if self._last_search != last_search:
+                    break
+                delay = min(delay - pause, self.settings.search_interval - (time.monotonic() - last_search))
+            if self.stop_event.is_set():
+                return
             # Collapse transitions queued during the provider cooldown.
             while not self.topic_queue.empty():
                 generation, topic = self.topic_queue.get_nowait()
-            self._last_search = time.monotonic()
             # A queued retry may carry an older summary or an empty passage.
             # Search from the latest accepted scene, never restore that input.
             topic = self._latest_topic or topic
@@ -928,6 +981,7 @@ class Pipeline:
             self._sync_image_pool(topic)
             if len(self._approved_images) >= self.settings.prefetch_count:
                 continue
+            self._last_search = time.monotonic()
             from .book_guidance import guided_queries
             guided = guided_queries(topic, self.settings)
             query = guided[0] if guided else sanitize_query(topic.query)
@@ -942,16 +996,55 @@ class Pipeline:
             published = False
             ranking_failed = False
             all_queries_paused = True
+            healthy_sources = False
+            download_retry_needed = False
             self._search_retry_delay = max(1.0, self.settings.search_interval)
             while not self.stop_event.is_set():
                 page_key = query.casefold()
                 page = self._query_pages.setdefault(page_key, 0)
-                candidates = await self._query_candidates(query, providers, cache, page=page,
-                                                          refresh=(page_key in self._refresh_queries
-                                                                   or page_key in self._fresh_query_cycles))
+                revision = self._image_filter_revision
+                evaluated = False
+                transient_download = False
+                evaluated_urls = set()
+
+                async def evaluate_batch(candidates):
+                    nonlocal evaluated, published, ranking_failed, transient_download, download_retry_needed
+                    if (revision != self._image_filter_revision or generation != self._generation
+                            or self.stop_event.is_set()):
+                        return True
+                    candidates = [candidate for candidate in candidates if candidate.image_url not in evaluated_urls]
+                    evaluated_urls.update(candidate.image_url for candidate in candidates)
+                    evaluated = True
+                    previous_failures = attempt_failures.copy()
+                    ready, failed = await self._evaluate_candidates(
+                        topic, candidates, query_basis if is_fallback else None,
+                        query if is_fallback else None, downloader, ranker, cache,
+                        rejected_urls, attempt_failures, attempt_stats)
+                    published = published or ready
+                    ranking_failed = ranking_failed or failed
+                    transient_download = transient_download or any(
+                        attempt_failures[reason] > previous_failures[reason]
+                        for reason in ("Source temporarily rate-limited", "Source unavailable", "Network error",
+                                       "Image download timed out", "Low system memory"))
+                    download_retry_needed = download_retry_needed or transient_download
+                    return (ranking_failed or len(self._approved_images) >= self.settings.prefetch_count
+                            or revision != self._image_filter_revision or generation != self._generation
+                            or self.stop_event.is_set())
+
+                await self._query_candidates(query, providers, cache, page=page,
+                                             refresh=(page_key in self._refresh_queries
+                                                      or page_key in self._fresh_query_cycles),
+                                             on_candidates=evaluate_batch)
+                # A refresh during a slow request owns its new force flag and
+                # page cursor. An obsolete request must not consume either.
+                if revision != self._image_filter_revision or generation != self._generation:
+                    break
+                if not evaluated and not self.stop_event.is_set():
+                    await evaluate_batch([])
                 failed_query = self._last_query_failed
                 incomplete_query = self._last_query_incomplete
                 succeeded_query = self._last_query_succeeded
+                healthy_sources = healthy_sources or succeeded_query
                 all_queries_paused = all_queries_paused and self._last_query_all_paused
                 self._refresh_queries.discard(page_key)
                 if incomplete_query:
@@ -960,17 +1053,10 @@ class Pipeline:
                     self._refresh_queries.add(page_key)
                 if failed_query:
                     attempt_failures["Source unavailable"] += 1
-                previous_failures = attempt_failures.copy()
-                published, ranking_failed = await self._evaluate_candidates(
-                    topic, candidates, query_basis if is_fallback else None,
-                    query if is_fallback else None, downloader, ranker, cache, rejected_urls, attempt_failures, attempt_stats)
                 if generation != self._generation:
                     # A slow old batch yielded to a newer scene. Return to the
                     # current primary query instead of paging its predecessor.
                     break
-                transient_download = any(attempt_failures[reason] > previous_failures[reason]
-                    for reason in ("Source temporarily rate-limited", "Source unavailable", "Network error",
-                                   "Image download timed out", "Low system memory"))
                 # An actual healthy response exhausts this page even if a
                 # different source is cooling down. Failed downloads retain
                 # their page so its already-cached URLs can be retried safely.
@@ -1010,6 +1096,8 @@ class Pipeline:
                                         "message": (f"{len(self._approved_images)}/{self.settings.prefetch_count} relevant images ready; "
                                                     "looking for more current-scene images." if self._approved_images else
                                                     "No usable matches yet; trying a shorter query from the current spoken context.")})
+            if generation != self._generation:
+                continue
             transient = any(attempt_failures[reason] for reason in ("Source temporarily rate-limited", "Source unavailable",
                                                                   "Network error", "Image download timed out", "Low system memory"))
             if self._approved_images and not ranking_failed:
@@ -1028,7 +1116,7 @@ class Pipeline:
                                         "threshold": self.settings.relevance_threshold, "message": message})
             if (ranking_failed or not self._approved_images
                     or ((transient or all_queries_paused) and len(self._approved_images) < self.settings.prefetch_count)):
-                if ranking_failed or transient:
+                if ranking_failed or download_retry_needed or (transient and not healthy_sources):
                     self._search_retry_delay = max(30.0, self.settings.search_interval)
                 if all_queries_paused:
                     deadlines = [self._source_retry_at.get(provider.name, 0) for provider in providers]
@@ -1048,6 +1136,7 @@ class Pipeline:
 
     async def _evaluate_candidates(self, topic, candidates, fallback_topic, fallback_query,
                                    downloader, ranker, cache, rejected_urls, attempt_failures, attempt_stats):
+        revision = self._image_filter_revision
         def ranking_topic():
             current = self._latest_topic or topic
             # Retain full context, concepts and kind, but score matches to
@@ -1096,8 +1185,10 @@ class Pipeline:
             elif phase == "empty":
                 if not unique:
                     filter_rejections = {reason: count for reason, count in attempt_failures.items()
-                                         if reason.startswith(("The recorded period", "No supported period", "Marked as AI"))}
-                    message = ("No results passed the selected time/AI filters. " +
+                                         if reason.startswith(("The recorded period", "No supported period", "Marked as AI",
+                                                               "Marked as mature content"))}
+                    filter_label = "image" if "Marked as mature content" in filter_rejections else "time/AI"
+                    message = (f"No results passed the selected {filter_label} filters. " +
                                "; ".join(f"{count} {reason.lower()}" for reason, count in filter_rejections.items())
                                if filter_rejections else "No images found for this query.")
                 elif not downloaded:
@@ -1134,11 +1225,14 @@ class Pipeline:
                             and cached.path.stat().st_size <= self.settings.max_download_bytes
                             and self.settings.min_aspect_ratio <= ratio <= self.settings.max_aspect_ratio):
                         # Keep cached validated pixels while using current source
-                        # date/attribution metadata. Embedded AI marks remain known.
+                        # date/attribution metadata. Known content marks remain
+                        # recorded even if another source omits them later.
                         updated = replace(candidate, local_path=cached.local_path, width=cached.width,
                                           height=cached.height, phash=cached.phash,
                                           ai_generated=(True if cached.ai_generated is True else candidate.ai_generated),
+                                          mature_content=(True if cached.mature_content is True else candidate.mature_content),
                                           temporal_evidence=(candidate.temporal_evidence or cached.temporal_evidence))
+                        cache.put_image(updated)
                         return updated, None
                 if candidate.image_url in rejected_urls:
                     return None, rejected_urls[candidate.image_url]
@@ -1165,6 +1259,8 @@ class Pipeline:
             # every slow/broken URL made an otherwise working preview blank.
             for completed in asyncio.as_completed(tasks):
                 image, reason = await completed
+                if revision != self._image_filter_revision or self.stop_event.is_set():
+                    return False, False
                 if image is None:
                     failures[reason] += 1
                     attempt_failures[reason] += 1
@@ -1192,7 +1288,7 @@ class Pipeline:
                         ranking_failed = True
                         self._report_ranking_failure(ranker, exc, len(unique), downloaded, len(published))
                         break
-                    if self.stop_event.is_set():
+                    if self.stop_event.is_set() or revision != self._image_filter_revision:
                         return False, False
                     latest = self._latest_topic or topic
                     if (generation != self.session_state.playback_generation
@@ -1249,6 +1345,9 @@ class Pipeline:
                     self._protected_paths.extend(c.local_path for c in chosen)
                     published.update(c.image_url for c in chosen)
                     self._approved_images.update((candidate.image_url, candidate) for candidate in chosen)
+                    from .session_image_export import record_session_images
+                    record_session_images(self.session_state, chosen, current,
+                                          self.settings.relevance_threshold, ranker.name)
                     self.emit("images", sorted(self._approved_images.values(), key=lambda candidate: candidate.score, reverse=True))
                     self.emit("status", f"Ready: {len(chosen)} relevant images · {ranker.name} ranking")
                 report("ready" if self._approved_images else "downloading", len(self._approved_images), best_score)
@@ -1263,7 +1362,7 @@ class Pipeline:
             report("ready" if self._approved_images else "empty", len(self._approved_images), best_score)
         return bool(published), ranking_failed
 
-    async def _query_candidates(self, query, providers, cache, page=0, refresh=False):
+    async def _query_candidates(self, query, providers, cache, page=0, refresh=False, on_candidates=None):
         from .temporal_filter import filter_identity, search_hints
         from .book_guidance import guidance_identity
         revision = self._image_filter_revision
@@ -1272,6 +1371,9 @@ class Pipeline:
         self._last_query_all_paused = False
         self._last_query_succeeded = False
         identity = [query.casefold(), self.settings.providers, self.settings.results_per_provider]
+        # Version both modes so legacy query rows without mature metadata are
+        # refreshed once, and permissive results never fill restricted searches.
+        identity.append({"content_policy": "mature-v1", "allow_nsfw": self.settings.allow_nsfw})
         guidance = guidance_identity(self._latest_topic or Topic(query, ""), self.settings)
         if guidance:
             identity.append({"book_guidance": guidance})
@@ -1287,8 +1389,16 @@ class Pipeline:
             identity.append({"page": page})
         key = json.dumps(identity)
         cached = cache.get_query(key)
-        if cached is not None and not refresh:
+        with self._history_lock:
+            consumed_urls = self._displayed_urls | self._rejected_image_urls
+        # A cached page whose images have all been consumed cannot refill the
+        # slideshow. Fetch it now instead of spending one cooldown per stale
+        # cache page before the ten-page cycle finally refreshes the source.
+        consumed = bool(cached) and all(candidate.image_url in consumed_urls for candidate in cached)
+        if cached is not None and not refresh and not consumed:
             self._last_query_succeeded = True
+            if on_candidates:
+                await on_candidates(cached)
             return cached
         self.emit("status", "Retrieving existing images from selected sources…")
         hints = search_hints(self.settings) if (self.settings.time_filter_enabled
@@ -1317,15 +1427,49 @@ class Pipeline:
                 # query too; its results still require source-backed dates.
                 found.extend(await request(query))
             return found
-        results = await asyncio.gather(*(search(p) for p in providers),
-                                       return_exceptions=True)
+        async def search_result(index, provider):
+            try:
+                return index, await search(provider)
+            except Exception as exc:
+                return index, exc
+
+        tasks = [asyncio.create_task(search_result(index, provider)) for index, provider in enumerate(providers)]
+        results = {}
+        try:
+            # A healthy source's hits can reach validation/ranking immediately.
+            # Waiting for all providers delayed useful images by a slow source's
+            # entire timeout. Cancel outstanding work once the buffer is full.
+            for completed in asyncio.as_completed(tasks):
+                index, result = await completed
+                results[index] = result
+                if revision != self._image_filter_revision or self.stop_event.is_set():
+                    break
+                if on_candidates and isinstance(result, list) and result:
+                    if await on_candidates(result):
+                        break
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            # A source may have already answered (including Retry-After) while
+            # the fast batch was being ranked. Preserve every completed answer
+            # before closing the batch, even if it no longer needs evaluation.
+            for task in tasks:
+                if not task.cancelled():
+                    index, result = task.result()
+                    results.setdefault(index, result)
         if revision != self._image_filter_revision:
             # An old request cannot fill a new range or create a false empty cache.
             return []
         candidates = []
-        succeeded = True
-        self._last_query_all_paused = bool(results) and all(result is _SOURCE_PAUSED for result in results)
-        for provider, result in zip(providers, results):
+        succeeded = len(results) == len(providers)
+        self._last_query_incomplete = not succeeded
+        self._last_query_all_paused = bool(results) and all(result is _SOURCE_PAUSED for result in results.values())
+        for index, provider in enumerate(providers):
+            if index not in results:
+                continue
+            result = results[index]
             if result is _SOURCE_PAUSED:
                 succeeded = False
                 self._last_query_incomplete = True
@@ -1334,14 +1478,16 @@ class Pipeline:
                 self._last_query_failed = True
                 self._last_query_incomplete = True
                 response = getattr(result, "response", None) or getattr(getattr(result, "__cause__", None), "response", None)
+                delay = max(30.0, self.settings.search_interval)
                 if response is not None and response.status_code == 429:
-                    delay = 30.0
                     value = response.headers.get("Retry-After", "")
                     try:
                         delay = max(delay, float(value)) if value.isdigit() else max(delay, parsedate_to_datetime(value).timestamp() - time.time())
                     except (ValueError, TypeError, OverflowError):
                         pass
-                    self._source_retry_at[provider.name] = time.monotonic() + delay
+                # Back off the failed source alone. Other healthy sources keep
+                # supplying images at the configured search cadence.
+                self._source_retry_at[provider.name] = time.monotonic() + delay
                 self.emit("status", f"{provider.name} unavailable ({type(result).__name__}); trying other sources.")
             else:
                 self._last_query_succeeded = True

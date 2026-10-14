@@ -747,7 +747,7 @@ async def test_openverse_index_dates_do_not_become_creation_evidence_or_request_
                          "indexed_on": "2024-01-01", "tags": [{"name": "geology"}]}]}
 
     def handler(request):
-        assert dict(request.url.params) == {"q": "dinosaur fossil", "page_size": "1"}
+        assert dict(request.url.params) == {"q": "dinosaur fossil", "page_size": "1", "mature": "false"}
         return httpx.Response(200, json=data)
 
     async with client(handler) as http:

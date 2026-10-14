@@ -110,7 +110,8 @@ async def test_metadata_rate_limit_is_not_negative_cached_and_recovers_after_coo
 
     clock = [time.monotonic()]
     monkeypatch.setattr("semantic_image_stream.engine.time.monotonic", lambda: clock[0])
-    key = json.dumps(["coastal cave", ["archive"], settings.results_per_provider])
+    key = json.dumps(["coastal cave", ["archive"], settings.results_per_provider,
+                     {"content_policy": "mature-v1", "allow_nsfw": settings.allow_nsfw}])
     try:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
             providers = [InternetArchiveProvider(settings, client=client)]

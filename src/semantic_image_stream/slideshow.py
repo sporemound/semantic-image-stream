@@ -190,10 +190,22 @@ class ImageCanvas(QWidget):
         self.current_credit = ""
         self.current_transcript = ""
         self._transcript_layout_cache = None
+        self._transcript_pending = deque()
+        self._transcript_idle = True
+        self._transcript_page_end = 0
+        self._transcript_timer = QTimer(self)
+        self._transcript_timer.setSingleShot(True)
+        self._transcript_timer.timeout.connect(self._advance_transcript)
         self.title_overlay_visible = False
         self._title_layout_cache = None
         self.context_overlay_visible = False
+        self._fullscreen_info = dict.fromkeys(
+            ("narrative", "scene", "subjects", "title", "credits", "transcript"), True
+        )
         self._context_content = None
+        self._context_rendered_html = None
+        self._context_has_sections = False
+        self._credit_has_sections = False
         self.context_panel = QFrame(self)
         self.context_panel.setObjectName("fullscreenContext")
         self.context_panel.setStyleSheet(
@@ -243,10 +255,31 @@ class ImageCanvas(QWidget):
 
     def set_context_overlay(self, visible: bool) -> None:
         self.context_overlay_visible = bool(visible)
-        self.context_panel.setVisible(self.context_overlay_visible)
+        self._position_context_panel()
         if visible:
-            self._position_context_panel()
             self.context_panel.raise_()
+            self._schedule_transcript()
+        else:
+            self._transcript_timer.stop()
+        self.update()
+
+    def set_fullscreen_info(self, selections: dict[str, bool]) -> None:
+        """Choose individual details for the context view without changing source data."""
+        updated = {
+            name: bool(selections.get(name, enabled))
+            for name, enabled in self._fullscreen_info.items()
+        }
+        if updated == self._fullscreen_info:
+            return
+        transcript_changed = updated["transcript"] != self._fullscreen_info["transcript"]
+        self._fullscreen_info = updated
+        self._refresh_context_text()
+        self._refresh_credit_panel()
+        self._position_context_panel()
+        if transcript_changed:
+            self._transcript_timer.stop()
+            self._schedule_transcript()
+        self.update()
 
     def set_context(self, summary: str, scene: str, visual_subjects) -> None:
         """Show accepted live story context as text, with no provider markup or links."""
@@ -254,42 +287,108 @@ class ImageCanvas(QWidget):
         if content == self._context_content:
             return
         self._context_content = content
+        self._refresh_context_text()
+        self._position_context_panel()
+
+    def _refresh_context_text(self) -> None:
+        content = self._context_content or ("", "", ())
         sections = []
-        for heading, text in (("Narrative context", content[0]), ("Current scene", content[1]),
-                              ("Visual subjects", "\n".join(content[2]))):
-            if text:
+        for key, heading, text in (("narrative", "Narrative context", content[0]),
+                                   ("scene", "Current scene", content[1]),
+                                   ("subjects", "Visual subjects", "\n".join(content[2]))):
+            if self._fullscreen_info[key] and text:
                 sections.append(
                     '<p style="color:#a8d9d3; margin-top:14px; margin-bottom:5px;">'
                     f'<b>{heading}</b></p><p style="margin-top:0; margin-bottom:0;">'
                     f'{escape(text).replace(chr(10), "<br>")}</p>'
                 )
-        self.context_text.setHtml("".join(sections) or
-                                 '<p><b>Narrative context</b></p><p>Waiting for interpreted speech.</p>')
-        self.context_text.verticalScrollBar().setValue(0)
-        self._position_context_panel()
+        if not sections and self._fullscreen_info["narrative"]:
+            sections.append('<p><b>Narrative context</b></p><p>Waiting for interpreted speech.</p>')
+        self._context_has_sections = bool(sections)
+        rendered_html = "".join(sections)
+        if rendered_html != self._context_rendered_html:
+            self._context_rendered_html = rendered_html
+            self.context_text.setHtml(rendered_html)
+            self.context_text.verticalScrollBar().setValue(0)
+        self.context_text.setVisible(self._context_has_sections)
 
     def set_transcript(self, text: str) -> None:
-        """Keep the newest recognized passage as a plain, bounded live subtitle."""
-        text = " ".join(text.split())[-1200:]
-        if text == self.current_transcript:
+        """Replace the caption stream, for a restored passage or a new book."""
+        self._transcript_timer.stop()
+        self._transcript_pending.clear()
+        self._transcript_idle = not bool(text.strip())
+        self._set_transcript_page(" ".join(text.split()))
+        self._schedule_transcript()
+
+    def enqueue_transcript(self, texts) -> None:
+        """Show every new live passage in order, without truncating long speech."""
+        passages = [" ".join(text.split()) for text in texts if text.strip()]
+        if not passages:
             return
+        if not self.context_overlay_visible or not self._fullscreen_info["transcript"]:
+            # Retain only the latest incoming passage while captions are hidden,
+            # so enabling them does not replay a growing hidden backlog.
+            self.set_transcript(passages[-1])
+            return
+        if self._transcript_idle or not self.current_transcript:
+            self._transcript_idle = False
+            self._set_transcript_page(passages.pop(0))
+        self._transcript_pending.extend(passages)
+        if not self._transcript_timer.isActive():
+            self._schedule_transcript()
+
+    def _set_transcript_page(self, text: str) -> None:
         self.current_transcript = text
         self._transcript_layout_cache = None
         self._position_context_panel()
         self.update()
 
+    def _schedule_transcript(self) -> None:
+        if not self.context_overlay_visible or not self._fullscreen_info["transcript"] or self._transcript_idle:
+            return
+        layout = self._transcript_layout()
+        if layout is not None:
+            words = len(" ".join(layout[1]).split())
+            self._transcript_timer.start(max(1000, min(4000, words * 200)))
+
+    def _advance_transcript(self) -> None:
+        self._transcript_timer.stop()
+        if self._transcript_idle or not self.context_overlay_visible or not self._fullscreen_info["transcript"]:
+            return
+        self._transcript_layout()
+        remaining = self.current_transcript[self._transcript_page_end:].lstrip()
+        if remaining:
+            self._set_transcript_page(remaining)
+        elif self._transcript_pending:
+            self._set_transcript_page(self._transcript_pending.popleft())
+        else:
+            self._transcript_idle = True
+            return
+        self._schedule_transcript()
+
     def _refresh_credit_panel(self) -> None:
-        self.credit_text.setPlainText(f"Image credits\n{self.current_credit}" if self.current_credit else "")
-        self.credit_text.setVisible(bool(self.current_credit))
+        sections = []
+        if self._fullscreen_info["title"] and self.current_title:
+            sections.append(f"Image title\n{self.current_title}")
+        if self._fullscreen_info["credits"] and self.current_credit:
+            sections.append(f"Image credits\n{self.current_credit}")
+        self._credit_has_sections = bool(sections)
+        text = "\n\n".join(sections)
+        if text != self.credit_text.toPlainText():
+            self.credit_text.setPlainText(text)
+        self.credit_text.setVisible(self._credit_has_sections)
 
     def _position_context_panel(self) -> None:
+        self.context_panel.setVisible(
+            self.context_overlay_visible and (self._context_has_sections or self._credit_has_sections)
+        )
         if not self.context_overlay_visible:
             return
         margin = max(12, min(64, int(self.width() * .04), int(self.height() * .05)))
         width = max(1, min(720, self.width() - 2 * margin,
                            max(340, int(self.width() * .48))))
         bottom = self.height() - margin
-        if self.title_overlay_visible and self.current_title:
+        if self.title_overlay_visible and self.current_title and not self.context_overlay_visible:
             bottom = min(bottom, int(self._title_layout()[2].top()) - margin)
         transcript_layout = self._transcript_layout()
         if transcript_layout is not None:
@@ -305,7 +404,7 @@ class ImageCanvas(QWidget):
         if self.credit_text.document().defaultFont() != credit_font:
             self.credit_text.setFont(credit_font)
             self.credit_text.document().setDefaultFont(credit_font)
-        self.credit_text.setMaximumHeight(max(28, min(140, int(height * .25))))
+        self.credit_text.setMaximumHeight(max(48, min(200, int(height * .35))))
         self.context_panel.setGeometry(margin, margin, width, height)
 
     def resizeEvent(self, event) -> None:
@@ -439,10 +538,9 @@ class ImageCanvas(QWidget):
         return font, text, bounds
 
     def _transcript_layout(self):
-        if not self.context_overlay_visible or not self.current_transcript:
+        if not self.context_overlay_visible or not self._fullscreen_info["transcript"] or not self.current_transcript:
             return None
-        title_top = self._title_layout()[2].top() if self.title_overlay_visible and self.current_title else None
-        key = self.width(), self.height(), self.current_transcript, title_top
+        key = self.width(), self.height(), self.current_transcript
         if self._transcript_layout_cache is not None and self._transcript_layout_cache[0] == key:
             return self._transcript_layout_cache[1]
         margin = self._overlay_margin()
@@ -456,21 +554,20 @@ class ImageCanvas(QWidget):
         layout.setTextOption(option)
         layout.beginLayout()
         lines = []
-        while True:
+        encoded = self.current_transcript.encode("utf-16-le")
+        page_end = 0
+        for _ in range(2):
             line = layout.createLine()
             if not line.isValid():
                 break
             line.setLineWidth(width)
-            lines.append(self.current_transcript[line.textStart():line.textStart() + line.textLength()].strip())
+            page_end = line.textStart() + line.textLength()
+            lines.append(encoded[line.textStart() * 2:page_end * 2].decode("utf-16-le").strip())
         layout.endLayout()
+        self._transcript_page_end = len(encoded[:page_end * 2].decode("utf-16-le"))
         metrics = QFontMetricsF(font)
-        if len(lines) > 2:
-            lines = lines[-2:]
-            lines[0] = metrics.elidedText("… " + lines[0], Qt.TextElideMode.ElideLeft, width)
         spacing = metrics.lineSpacing() * 1.05
         bottom = self.height() - margin
-        if title_top is not None:
-            bottom = min(bottom, title_top - max(12, int(self.height() * .018)))
         bounds = QRectF(margin, bottom - spacing * len(lines), width, spacing * len(lines))
         result = font, lines, bounds
         self._transcript_layout_cache = key, result
@@ -497,7 +594,7 @@ class ImageCanvas(QWidget):
         painter.restore()
 
     def _draw_title(self, painter: QPainter) -> None:
-        if not self.title_overlay_visible or not self.current_title:
+        if not self.title_overlay_visible or not self.current_title or self.context_overlay_visible:
             return
         font, lines, bounds = self._title_layout()
         gradient_top = max(0, bounds.top() - self.height() * .15)

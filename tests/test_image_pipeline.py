@@ -31,7 +31,8 @@ class QueryProvider:
 
 
 def query_key(pipeline, query):
-    return json.dumps([query.casefold(), pipeline.settings.providers, pipeline.settings.results_per_provider])
+    return json.dumps([query.casefold(), pipeline.settings.providers, pipeline.settings.results_per_provider,
+                       {"content_policy": "mature-v1", "allow_nsfw": pipeline.settings.allow_nsfw}])
 
 
 def stop_on_empty(pipeline, monkeypatch, retries=0):
@@ -152,7 +153,7 @@ async def test_topic_changes_rerank_inflight_results_instead_of_discarding(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_unrelated_old_topic_images_are_not_published(tmp_path):
+async def test_unrelated_old_topic_images_are_not_published(tmp_path, monkeypatch):
     pipeline, cache, directory, events, ready = pipeline_fixture(tmp_path)
     initial = Topic("black hole event horizon", "Black holes", kind="science")
     latest = Topic("orchid pollination", "Orchids and pollinating insects", kind="science")
@@ -160,21 +161,35 @@ async def test_unrelated_old_topic_images_are_not_published(tmp_path):
     pipeline._latest_topic = initial
     pipeline.topic_queue.put_nowait((1, initial))
     release = asyncio.Event()
-    provider = Provider([ImageCandidate("https://image.example/fast", "https://source.example/file",
-                                       "Black hole event horizon", "wikimedia")], release)
+    called = asyncio.Event()
+    old_image = ImageCandidate("https://image.example/fast", "https://source.example/file",
+                               "Black hole event horizon", "wikimedia")
+
+    class DelayedProvider(QueryProvider):
+        async def search(self, query, limit):
+            if query == initial.query:
+                called.set()
+                await release.wait()
+            return await super().search(query, limit)
+
+    provider = DelayedProvider({initial.query: [old_image]})
+    monkeypatch.setattr("semantic_image_stream.engine.fallback_queries", lambda _: [])
+    stop_on_empty(pipeline, monkeypatch)
     task = asyncio.create_task(pipeline._search([provider], Downloader(directory), MetadataRanker(), cache))
     try:
-        await asyncio.wait_for(provider.called.wait(), 2)
+        await asyncio.wait_for(called.wait(), 2)
         pipeline._generation = 2
         pipeline._latest_topic = latest
+        pipeline.topic_queue.put_nowait((2, latest))
         release.set()
-        for _ in range(100):
-            if any(kind == "retrieval" and data["phase"] == "empty" for kind, data in events):
-                break
-            await asyncio.sleep(0.01)
-        assert any(kind == "retrieval" and data["phase"] == "empty" for kind, data in events)
+        await asyncio.wait_for(task, 2)
+        assert provider.queries == [initial.query, latest.query]
+        empty = [data for kind, data in events if kind == "retrieval" and data["phase"] == "empty"]
+        assert len(empty) == 1 and empty[0]["found"] == 0
         assert not ready.is_set()
         assert not any(kind == "images" for kind, _ in events)
+        assert not pipeline._approved_images and not pipeline.session_state.image_matches
+        assert pipeline._latest_topic is latest
     finally:
         await cleanup(task, pipeline, cache)
 
@@ -296,10 +311,17 @@ async def test_partial_provider_failure_still_tries_alternatives_without_negativ
         await asyncio.wait_for(pipeline._search([unavailable, available], Downloader(directory),
                                                MetadataRanker(), cache), 2)
         expected = [topic.query, "Corona satellite"] * 2
-        assert unavailable.queries == available.queries == expected
-        assert pages == [(source, query, 1) for query in expected[:2] for source in ("wikimedia", "archive")]
+        assert unavailable.queries == [topic.query]
+        assert available.queries == expected
+        assert pipeline._source_retry_at["wikimedia"] > time.monotonic()
+        assert "archive" not in pipeline._source_retry_at
+        assert pipeline._search_retry_delay == max(1.0, pipeline.settings.search_interval)
+        assert pages == [("archive", query, 1) for query in expected[:2]]
         assert all(pipeline._query_pages[query.casefold()] == 2 for query in expected[:2])
         assert all(cache.get_query(query_key(pipeline, query)) is None for query in expected)
+        assert pipeline._last_query_incomplete and not pipeline._last_query_all_paused
+        assert pipeline._last_query_succeeded and not pipeline._last_query_failed
+        assert all(query.casefold() in pipeline._refresh_queries for query in expected[:2])
     finally:
         cache.close()
 
@@ -339,7 +361,8 @@ async def test_topic_change_during_fallback_rejects_obsolete_matches(tmp_path, m
     pipeline._generation = 1
     pipeline._latest_topic = initial
     pipeline.topic_queue.put_nowait((1, initial))
-    monkeypatch.setattr("semantic_image_stream.engine.fallback_queries", lambda _: ["Corona satellite"])
+    monkeypatch.setattr("semantic_image_stream.engine.fallback_queries",
+                        lambda current: ["Corona satellite"] if current is initial else [])
     called, release = asyncio.Event(), asyncio.Event()
 
     class DelayedFallback(QueryProvider):
@@ -358,8 +381,10 @@ async def test_topic_change_during_fallback_rejects_obsolete_matches(tmp_path, m
         await asyncio.wait_for(called.wait(), 2)
         pipeline._generation = 2
         pipeline._latest_topic = latest
+        pipeline.topic_queue.put_nowait((2, latest))
         release.set()
         await asyncio.wait_for(task, 2)
+        assert provider.queries == [initial.query, "Corona satellite", latest.query]
         assert not ready.is_set()
         assert not any(kind == "images" for kind, _ in events)
         empty = [data for kind, data in events if kind == "retrieval" and data["phase"] == "empty"]
@@ -406,7 +431,8 @@ async def test_topic_change_while_fallback_is_ranked_rechecks_current_context(tm
     pipeline._generation = 1
     pipeline._latest_topic = initial
     pipeline.topic_queue.put_nowait((1, initial))
-    monkeypatch.setattr("semantic_image_stream.engine.fallback_queries", lambda _: ["Corona satellite"])
+    monkeypatch.setattr("semantic_image_stream.engine.fallback_queries",
+                        lambda current: ["Corona satellite"] if current is initial else [])
     image = ImageCandidate("https://image.example/fast", "https://source.example/file",
                            "Corona satellite imagery", "wikimedia")
     provider = QueryProvider({"Corona satellite": [image]})
@@ -554,16 +580,26 @@ async def test_new_ungrounded_scene_never_approves_old_inflight_images(tmp_path,
             return [replace(candidate, score=0.99) for candidate in candidates]
 
     ranker = AlwaysAccept()
-    stop_on_empty(pipeline, monkeypatch)
+    request_finished = asyncio.Event()
+    query_candidates = pipeline._query_candidates
+
+    async def track_request(*args, **kwargs):
+        result = await query_candidates(*args, **kwargs)
+        request_finished.set()
+        return result
+
+    monkeypatch.setattr(pipeline, "_query_candidates", track_request)
     task = asyncio.create_task(pipeline._search([provider], Downloader(directory), ranker, cache))
     try:
         await asyncio.wait_for(provider.called.wait(), 2)
         pipeline._generation = 2
         pipeline._latest_topic = ungrounded
         release.set()
-        await asyncio.wait_for(task, 2)
+        await asyncio.wait_for(request_finished.wait(), 2)
+        assert not task.done(), "Monitoring stays idle until the story has another grounded visual topic"
         assert ranker.calls == 0
         assert not ready.is_set() and not any(kind == "images" for kind, _ in events)
+        assert not pipeline._approved_images and not pipeline.session_state.image_matches
     finally:
         await cleanup(task, pipeline, cache)
 

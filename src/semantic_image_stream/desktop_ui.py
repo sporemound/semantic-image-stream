@@ -12,10 +12,10 @@ import weakref
 from urllib.parse import urlsplit
 
 from PySide6.QtCore import QObject, QSignalBlocker, Qt, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut, QTextCursor
+from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
-    QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
+    QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
     QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSplitter, QTabWidget, QTextEdit,
     QVBoxLayout, QWidget,
 )
@@ -24,7 +24,8 @@ from .configuration import Settings
 from .models import ImageCandidate, Topic, TranscriptSegment
 from .presets import AUDIOBOOK_PRESETS, apply_audiobook_preset
 from .range_slider import RangeSlider
-from .session_store import SessionStore, SessionStoreError
+from .session_store import SessionStore, SessionStoreError, export_context as export_context_file, import_context as import_context_file
+from .session_image_export import ImageExportError, count_session_images, export_session_images
 from .slideshow import ImageCanvas, SlideshowController
 from .training_paths import training_file
 from .temporal_filter import format_year, parse_year
@@ -59,6 +60,10 @@ QScrollArea { border: 0; }
 QSplitter::handle { background: #233343; height: 5px; width: 5px; }
 QCheckBox { spacing: 7px; }
 """
+
+FULLSCREEN_INFORMATION = (("transcript", "Live subtitles"), ("narrative", "Narrative context"),
+                          ("scene", "Current scene"), ("subjects", "Visual subjects"),
+                          ("title", "Image title"), ("credits", "Image credits"))
 
 
 def safe_source_url(value: str) -> QUrl | None:
@@ -109,6 +114,7 @@ class MainWindow(QMainWindow):
         self._playback_key = ""
         self._explicit_playback_key = False
         self._session = 0
+        self._minimum_image_request_revision = 0
         self._device_request = 0
         self._devices_loading = False
         self._device_selection_error = ""
@@ -155,6 +161,7 @@ class MainWindow(QMainWindow):
         self._restore_displayed_ledger()
         if self.settings.retain_context:
             self._prepare_session_store(restore=True)
+        self._update_image_export_status()
         self._load_devices()
         for key, handler in (("F11", self.toggle_fullscreen), ("Escape", self.leave_fullscreen),
                              ("Space", self.toggle_pause), ("Right", self.next_image)):
@@ -356,6 +363,13 @@ class MainWindow(QMainWindow):
             provider_layout.addWidget(check)
             self.input_controls.append(check)
         self.form.addRow("Image sources", providers)
+        self.allow_nsfw = QCheckBox("Allow nudity (NSFW)")
+        self.allow_nsfw.setChecked(self.settings.allow_nsfw)
+        self.allow_nsfw.setToolTip(
+            "Allow mature image results where supported by the source. "
+            "Some sources do not label nudity or expose mature images."
+        )
+        self.form.addRow(self.allow_nsfw)
         self.time_filter_enabled = QCheckBox("Filter by time period")
         self.time_filter_enabled.setChecked(self.settings.time_filter_enabled)
         self.form.addRow(self.time_filter_enabled)
@@ -419,6 +433,7 @@ class MainWindow(QMainWindow):
         self.time_filter_scale.currentIndexChanged.connect(self._time_scale_changed)
         self.time_filter_include_undated.toggled.connect(self._image_filters_edited)
         self.exclude_ai_generated.toggled.connect(self._image_filters_edited)
+        self.allow_nsfw.toggled.connect(self._image_filters_edited)
         self.time_filter_start.textEdited.connect(self._time_fields_edited)
         self.time_filter_end.textEdited.connect(self._time_fields_edited)
         self.time_range.valuesChanged.connect(self._time_slider_changed)
@@ -514,12 +529,31 @@ class MainWindow(QMainWindow):
             self.display.addItem(f"{index + 1} · {screen.name()} ({screen.size().width()} × {screen.size().height()})", index)
         self.display.setCurrentIndex(min(self.settings.display_index, max(0, self.display.count() - 1)))
         self.form.addRow("Fullscreen display", self.display)
+        self.fullscreen_info_menu = QMenu(self)
+        self.fullscreen_info_actions = {}
+        for key, label in FULLSCREEN_INFORMATION:
+            action = QAction(label, self.fullscreen_info_menu)
+            action.setCheckable(True)
+            action.setChecked(getattr(self.settings, "fullscreen_" + key))
+            action.toggled.connect(self._apply_fullscreen_information)
+            self.fullscreen_info_actions[key] = action
+            self.fullscreen_info_menu.addAction(action)
+        self.fullscreen_info_button = QPushButton("Choose what to show")
+        self.fullscreen_info_button.setMenu(self.fullscreen_info_menu)
+        self.fullscreen_info_button.setToolTip(
+            "Choose information for Fullscreen with context. Right-click the fullscreen image to change it. "
+            "Save settings to keep your choices."
+        )
+        self.form.addRow("Fullscreen information", self.fullscreen_info_button)
+        self.canvas.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.canvas.customContextMenuRequested.connect(self._show_fullscreen_information)
+        self._apply_fullscreen_information()
         for signal in (self.interval.valueChanged, self.transition.currentIndexChanged, self.attribution.toggled):
             signal.connect(self._apply_presentation)
         settings_scroll = QScrollArea()
         settings_scroll.setWidgetResizable(True)
         settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        settings_scroll.setMinimumHeight(180)
+        settings_scroll.setMinimumHeight(145)
         settings_scroll.setWidget(settings_frame)
         sidebar_layout.addWidget(settings_scroll, 3)
         self.tabs = QTabWidget()
@@ -541,15 +575,51 @@ class MainWindow(QMainWindow):
         self.context_text.setPlaceholderText("The local interpreter's narrative summary, current scene, and visual subjects appear here.")
         context_layout.addWidget(self.context_status)
         context_layout.addWidget(self.session_status_label)
+        context_transfer = QHBoxLayout()
+        self.export_context_button = QPushButton("Export context")
+        self.export_context_button.setToolTip("Save the complete transcript, story interpretation, and applied book guidance to a file.")
+        self.export_context_button.clicked.connect(self.export_context)
+        self.import_context_button = QPushButton("Import context")
+        self.import_context_button.setToolTip("Replace the current story with a saved context file. Stop monitoring first.")
+        self.import_context_button.clicked.connect(self.import_context)
+        context_transfer.addWidget(self.export_context_button)
+        context_transfer.addWidget(self.import_context_button)
+        context_layout.addLayout(context_transfer)
         context_layout.addWidget(self.context_text, 1)
         self.image_history = QListWidget()
         self.image_history.itemClicked.connect(self._select_history)
+        self.images_panel = QWidget()
+        images_layout = QVBoxLayout(self.images_panel)
+        images_layout.setContentsMargins(0, 0, 0, 0)
+        images_layout.addWidget(self.image_history, 1)
+        export_filter = QHBoxLayout()
+        self.image_export_status = QLabel("No matching links\nCSV minimum relevance")
+        self.image_export_status.setTextFormat(Qt.TextFormat.PlainText)
+        self.image_export_status.setObjectName("status")
+        export_filter.addWidget(self.image_export_status, 1)
+        self.csv_minimum = self._spin(0, 1, self.settings.relevance_threshold, 0.05)
+        self.csv_minimum.setToolTip("Export session links at or above this score. Only images accepted by the search filters are recorded.")
+        self.csv_minimum.valueChanged.connect(self._update_image_export_status)
+        export_filter.addWidget(self.csv_minimum)
+        images_layout.addLayout(export_filter)
+        image_actions = QHBoxLayout()
+        self.refresh_images_button = QPushButton("Refresh images")
+        self.refresh_images_button.setToolTip("Request fresh results for the current scene while keeping the displayed image and story context.")
+        self.refresh_images_button.clicked.connect(self.refresh_images)
+        self.refresh_images_button.setEnabled(False)
+        image_actions.addWidget(self.refresh_images_button)
+        self.export_images_button = QPushButton("Export CSV")
+        self.export_images_button.setToolTip("Save qualifying image links, scores, scene context and attribution from this book session, including images not yet displayed.")
+        self.export_images_button.clicked.connect(self.export_images_csv)
+        self.export_images_button.setEnabled(False)
+        image_actions.addWidget(self.export_images_button)
+        images_layout.addLayout(image_actions)
         self.topic_history = QListWidget()
         self.tabs.addTab(self.transcript, "Transcript")
         self._context_tab_index = self.tabs.addTab(self.context_panel, "Context")
-        self.tabs.addTab(self.image_history, "Images")
+        self.tabs.addTab(self.images_panel, "Images")
         self.tabs.addTab(self.topic_history, "Topics")
-        self.tabs.setMinimumHeight(145)
+        self.tabs.setMinimumHeight(210)
         sidebar_layout.addWidget(self.tabs, 1)
         utility_row = QHBoxLayout()
         self.save_settings_button = QPushButton("Save settings")
@@ -629,9 +699,21 @@ class MainWindow(QMainWindow):
             setattr(settings, name, value)
         for name, value in self._collect_image_filters().items():
             setattr(settings, name, value)
+        for key, action in self.fullscreen_info_actions.items():
+            setattr(settings, "fullscreen_" + key, action.isChecked())
         if require_recording and settings.audio_mode == "file" and not Path(settings.audio_file).is_file():
             raise ValueError("Choose an existing audio recording first.")
         return settings.validate()
+
+    def _apply_fullscreen_information(self, *args) -> None:
+        selections = {key: action.isChecked() for key, action in self.fullscreen_info_actions.items()}
+        for key, enabled in selections.items():
+            setattr(self.settings, "fullscreen_" + key, enabled)
+        self.canvas.set_fullscreen_info(selections)
+
+    def _show_fullscreen_information(self, position) -> None:
+        if self._fullscreen_context:
+            self.fullscreen_info_menu.exec(self.canvas.mapToGlobal(position))
 
     def _collect_image_filters(self) -> dict:
         try:
@@ -653,12 +735,14 @@ class MainWindow(QMainWindow):
                 "time_filter_start": start, "time_filter_end": end,
                 "time_filter_scale": self.time_filter_scale.currentData(),
                 "time_filter_include_undated": self.time_filter_include_undated.isChecked(),
-                "exclude_ai_generated": self.exclude_ai_generated.isChecked()}
+                "exclude_ai_generated": self.exclude_ai_generated.isChecked(),
+                "allow_nsfw": self.allow_nsfw.isChecked()}
 
     def _update_image_filter_controls(self) -> None:
         if not hasattr(self, "time_filter_panel"):
             return
         self.time_filter_enabled.setEnabled(not self._stopping)
+        self.allow_nsfw.setEnabled(not self._stopping)
         self.exclude_ai_generated.setEnabled(not self._stopping)
         self.time_filter_panel.setEnabled(self.time_filter_enabled.isChecked() and not self._stopping)
 
@@ -686,6 +770,10 @@ class MainWindow(QMainWindow):
 
     def _image_filters_edited(self, *args) -> None:
         self._update_image_filter_controls()
+        if (not self.allow_nsfw.isChecked() and self._displayed_candidate is not None
+                and getattr(self._displayed_candidate, "mature_content", None) is True):
+            self.slideshow.discard(self._displayed_candidate)
+            self._show_image(None)
         try:
             self._collect_image_filters()
         except ValueError as exc:
@@ -930,7 +1018,7 @@ class MainWindow(QMainWindow):
                 self._applied_book_guidance = saved.book_context.strip(), saved.book_guidance_strength
                 self._guidance_revision = saved.guidance_revision
                 self._book_guidance_edited()
-                self._show_transcript(list(saved.segments))
+                self._show_transcript(list(saved.segments), restored=True)
                 if saved.topic is not None:
                     self._handle_event(self._session, "topic", saved.topic)
                 self._context_frozen = True
@@ -979,9 +1067,81 @@ class MainWindow(QMainWindow):
         self._session_store.clear()
         self._show_session_status("Saved book cleared locally.")
 
+    def export_context(self) -> None:
+        state = self._session_state
+        if state is None:
+            from .engine import SessionState
+            state = SessionState(segments=list(self._transcript_segments),
+                                 book_context=self._applied_book_guidance[0],
+                                 book_guidance_strength=self._applied_book_guidance[1])
+            state.topic = self._feedback_topic
+            if state.topic is None and self._context_payload.get("summary"):
+                context = self._context_payload
+                state.topic = Topic(self.current_topic, " ".join(segment.text for segment in state.segments),
+                                    summary=str(context.get("summary") or "")[:400],
+                                    scene=str(context.get("scene") or "")[:280],
+                                    visual_subjects=tuple(str(subject) for subject in context.get("visual_subjects", ()))[:16],
+                                    context_used_segments=min(len(state.segments), int(context.get("segments_used") or 0)))
+        path, _ = QFileDialog.getSaveFileName(self, "Export context", "semantic-image-stream-context.json",
+                                             "Context files (*.json)")
+        if not path:
+            return
+        try:
+            export_context_file(state, Path(path))
+        except SessionStoreError as exc:
+            self._show_session_status(str(exc))
+            return
+        self._show_session_status("Context exported · transcript and story progress saved in the selected file.")
+
+    def import_context(self) -> None:
+        if self._monitoring or self._stopping:
+            self._show_session_status("Stop monitoring before importing another context.")
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Import context", "", "Context files (*.json)")
+        if not path:
+            return
+        try:
+            state = import_context_file(Path(path))
+        except SessionStoreError as exc:
+            self._show_session_status(str(exc))
+            return
+        self._session_store_generation += 1
+        if self._session_store is not None:
+            self._session_store.detach()
+            self._session_store.on_status = self._store_status_callback()
+        self.settings.book_context = state.book_context
+        self.settings.book_guidance_strength = state.book_guidance_strength
+        with QSignalBlocker(self.book_context), QSignalBlocker(self.book_guidance_strength):
+            self.book_context.setText(state.book_context)
+            self.book_guidance_strength.setValue(state.book_guidance_strength)
+        self._reset_context(state.book_context)
+        self._session_state = state
+        self._guidance_revision = state.guidance_revision
+        state.guidance_draft_marker = ""
+        state.guidance_draft_revision = state.guidance_revision
+        self._book_guidance_edited()
+        self._show_transcript(list(state.segments), restored=True)
+        if state.topic is not None:
+            self._handle_event(self._session, "topic", state.topic)
+        self._context_frozen = True
+        self._retrieval_seen = False
+        self._retrieval_message = "Images: imported story is ready. Start monitoring to resume."
+        self._refresh_image_status()
+        self._update_controls()
+        self.tabs.setCurrentWidget(self.context_panel)
+        self._device_status("Context imported · start monitoring to continue this story.")
+        try:
+            self._save_story_metadata(flush=True)
+        except SessionStoreError as exc:
+            self._show_session_status(f"Context imported into this window. {exc}")
+            return
+        self._show_session_status("Context imported · ready to resume." if self.retain_context.isChecked()
+                                  else "Context imported · saving off; export again to keep later changes.")
+
     def _reset_context(self, book_context: str = "", clear_seen: bool = False) -> None:
         """Start a new in-memory book without letting old workers update its panels."""
         self._session += 1
+        self._minimum_image_request_revision = 0
         self._session_state = None
         self.pipeline = None
         self._session_book_context = book_context
@@ -1009,6 +1169,7 @@ class MainWindow(QMainWindow):
         self.current_topic = ""
         self.topic_label.setText("Waiting for a topic")
         self.slideshow.clear(clear_seen=clear_seen)
+        self._update_image_export_status()
 
     def new_book(self) -> None:
         if self._monitoring or self._stopping:
@@ -1146,10 +1307,13 @@ class MainWindow(QMainWindow):
 
             def callback(kind, value):
                 try:
+                    if kind in {"images", "retrieval"}:
+                        value = (getattr(pipeline, "image_request_revision", 0), value)
                     self.relay.pipeline_event.emit(token, kind, value)
                 except RuntimeError:
                     pass
-            self.pipeline = Pipeline(deepcopy(self.settings), callback, session_state=self._session_state)
+            self.pipeline = pipeline = Pipeline(deepcopy(self.settings), callback, session_state=self._session_state)
+            self._minimum_image_request_revision = 0
             self._feedback_pending.clear()
             self._update_feedback_controls()
             if not self._transcript_segments:
@@ -1196,6 +1360,7 @@ class MainWindow(QMainWindow):
         self.clear_cache_button.setEnabled(not active)
         self.clear_history_button.setEnabled(not active)
         self.new_book_button.setEnabled(not active)
+        self.import_context_button.setEnabled(not active)
         for control in self.input_controls:
             control.setEnabled(not active)
         self._preset_selected()
@@ -1203,6 +1368,7 @@ class MainWindow(QMainWindow):
         self._update_book_guidance_controls()
         self._update_feedback_controls()
         self._update_image_filter_controls()
+        self._update_image_export_status()
         if not active:
             is_file = self.audio_mode.currentData() == "file"
             self.audio_file.setEnabled(is_file)
@@ -1214,6 +1380,10 @@ class MainWindow(QMainWindow):
     def _handle_event(self, session: int, kind: str, payload) -> None:
         if session != self._session or self._closing:
             return
+        if kind in {"images", "retrieval"} and isinstance(payload, tuple) and len(payload) == 2:
+            revision, payload = payload
+            if type(revision) is not int or revision < self._minimum_image_request_revision:
+                return
         if kind == "status":
             self._last_error = ""
             self.status_label.setText(str(payload))
@@ -1232,6 +1402,7 @@ class MainWindow(QMainWindow):
             self._accept_book_guidance(payload)
             if not self._context_frozen:
                 self._show_context(payload)
+                self._update_image_export_status()
         elif kind == "topic":
             if self._context_frozen:
                 return
@@ -1255,9 +1426,11 @@ class MainWindow(QMainWindow):
                 while self.topic_history.count() > 30:
                     self.topic_history.takeItem(self.topic_history.count() - 1)
             self._update_feedback_controls()
+            self._update_image_export_status()
         elif kind == "images":
             if self._context_frozen:
                 return
+            self._update_image_export_status()
             missing = sum(not candidate.path.is_file() for candidate in payload)
             if not self._retrieval_seen:
                 self._retrieval_message = f"{len(payload)} relevant images available."
@@ -1278,7 +1451,7 @@ class MainWindow(QMainWindow):
         elif kind == "feedback":
             self._feedback_saved(payload)
 
-    def _show_transcript(self, segments: list[TranscriptSegment]) -> None:
+    def _show_transcript(self, segments: list[TranscriptSegment], *, restored: bool = False) -> None:
         """Append a full-session event's new lines without rebuilding an audiobook."""
         count = len(self._transcript_segments)
         extends = len(segments) >= count and segments[:count] == self._transcript_segments
@@ -1291,6 +1464,7 @@ class MainWindow(QMainWindow):
         at_end = position >= scrollbar.maximum() - 10
         if not extends:
             self.transcript.clear()
+            self.canvas.set_transcript("")
             count = 0
         lines = []
         for segment in segments[count:]:
@@ -1301,8 +1475,11 @@ class MainWindow(QMainWindow):
             cursor.movePosition(QTextCursor.MoveOperation.End)
             cursor.insertText(("\n" if count else "") + "\n".join(lines))
         self._transcript_segments = list(segments)
-        latest = next((segment.text for segment in reversed(segments) if segment.text.strip()), "")
-        self.canvas.set_transcript(latest)
+        if restored or not extends:
+            latest = next((segment.text for segment in reversed(segments) if segment.text.strip()), "")
+            self.canvas.set_transcript(latest)
+        elif lines:
+            self.canvas.enqueue_transcript(segment.text for segment in segments[count:])
         if at_end:
             scrollbar.setValue(scrollbar.maximum())
         else:
@@ -1454,6 +1631,10 @@ class MainWindow(QMainWindow):
         self.status_label.style().polish(self.status_label)
 
     def _show_image(self, candidate: ImageCandidate | None) -> None:
+        if (candidate is not None and getattr(candidate, "mature_content", None) is True
+                and not self.allow_nsfw.isChecked()):
+            self.slideshow.discard(candidate, self._displayed_candidate)
+            return
         displayed = self.canvas.set_image(candidate)
         if candidate is None:
             self._feedback_frame_token += 1
@@ -1581,6 +1762,63 @@ class MainWindow(QMainWindow):
     def next_image(self) -> None:
         self.slideshow.advance(manual=True)
 
+    def _update_image_export_status(self, *args) -> None:
+        count = count_session_images(self._session_state, self.csv_minimum.value())
+        self.export_images_button.setEnabled(count > 0)
+        self.image_export_status.setText(
+            f"{count} session link{'s' if count != 1 else ''}\nCSV minimum relevance"
+            if count else "No matching links\nCSV minimum relevance"
+        )
+        self.refresh_images_button.setEnabled(
+            self._monitoring and not self._stopping and self.pipeline is not None
+            and self._feedback_topic is not None
+        )
+
+    def export_images_csv(self) -> None:
+        if self._session_state is None:
+            return
+        destination, _ = QFileDialog.getSaveFileName(
+            self, "Export relevant session image links", "semantic-image-stream-images.csv",
+            "CSV files (*.csv)",
+        )
+        if not destination:
+            return
+        path = Path(destination)
+        if not path.suffix:
+            path = path.with_suffix(".csv")
+        try:
+            count = export_session_images(self._session_state, path, self.csv_minimum.value())
+        except ImageExportError as exc:
+            self.image_export_status.setText("Export failed\nCSV minimum relevance")
+            self.image_export_status.setToolTip(str(exc))
+            self._error(str(exc))
+            return
+        self.image_export_status.setText(f"Exported {count} image link{'s' if count != 1 else ''}\nCSV minimum relevance")
+        self.image_export_status.setToolTip(str(path))
+
+    def refresh_images(self) -> None:
+        if not self._monitoring or self._stopping or self.pipeline is None:
+            return
+        previous_revision = self._minimum_image_request_revision
+        revision = getattr(self.pipeline, "image_request_revision", None)
+        if type(revision) is int:
+            # Old worker batches may already be queued in Qt. Mark them stale
+            # before scheduling the worker's next discovery revision.
+            self._minimum_image_request_revision = max(previous_revision, revision + 1)
+        try:
+            if not self.pipeline.refresh_images():
+                self._minimum_image_request_revision = previous_revision
+                self.image_export_status.setText("Waiting for a spoken scene before refreshing images.")
+                return
+        except Exception as exc:
+            self._minimum_image_request_revision = previous_revision
+            self._error(f"Could not refresh images: {exc}")
+            return
+        self.slideshow.reset_playback(self._playback_key)
+        self._retrieval_seen = True
+        self._retrieval_message = "Images: refreshing results for the current scene…"
+        self._refresh_image_status()
+
     def save_current(self) -> None:
         candidate = self._displayed_candidate
         if candidate is None or not self.save_button.isEnabled():
@@ -1597,7 +1835,7 @@ class MainWindow(QMainWindow):
 
     def save_settings(self) -> None:
         try:
-            settings = self._read_settings()
+            settings = self._read_settings(require_recording=False)
             destination = self.config_path
             if destination is None:
                 path, _ = QFileDialog.getSaveFileName(self, "Save configuration", "config.toml", "TOML configuration (*.toml)")

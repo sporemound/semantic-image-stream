@@ -54,6 +54,7 @@ class ImageCandidate:
     authenticity: str = "Unverified source imagery"
     ai_generated: bool | None = None
     temporal_evidence: list[dict] = field(default_factory=list)
+    mature_content: bool | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -67,6 +68,8 @@ class ImageCandidate:
             fields["temporal_evidence"] = validated_evidence(fields["temporal_evidence"])
         if "ai_generated" in fields and type(fields["ai_generated"]) is not bool:
             fields["ai_generated"] = None
+        if "mature_content" in fields and type(fields["mature_content"]) is not bool:
+            fields["mature_content"] = None
         return cls(**fields)
 
     @property

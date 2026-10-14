@@ -11,8 +11,13 @@ import re
 import tempfile
 import threading
 import time
+from typing import TYPE_CHECKING
 
 from .models import Topic, TranscriptSegment
+from .session_image_export import MAX_SAVED_IMAGE_MATCHES, restore_image_matches, snapshot_image_matches
+
+if TYPE_CHECKING:
+    from .engine import SessionState
 
 MAX_SESSION_BYTES = 256 * 1024 * 1024
 SCHEMA_VERSION = 1
@@ -73,7 +78,8 @@ def snapshot_session(state) -> dict:
                 "guidance_draft_marker": state.guidance_draft_marker,
                 "guidance_draft_revision": state.guidance_draft_revision,
                 "provider_key": list(state.provider_key), "segments": [asdict(segment) for segment in state.segments],
-                "topic": _topic_fields(state.topic), "analyzer_checkpoint": deepcopy(state.analyzer_checkpoint)}
+                "topic": _topic_fields(state.topic), "analyzer_checkpoint": deepcopy(state.analyzer_checkpoint),
+                "image_matches": snapshot_image_matches(state, maximum=MAX_SAVED_IMAGE_MATCHES)}
 
 
 def restore_session(data):
@@ -114,6 +120,7 @@ def restore_session(data):
                          segments=segments, provider_key=key, book_guidance_strength=strength,
                          guidance_revision=guidance_revision, guidance_draft_marker=draft_marker,
                          guidance_draft_revision=draft_revision)
+    state.image_matches = restore_image_matches(data.get("image_matches"), session_id=state.session_id)
     topic = data.get("topic")
     # A damaged derived summary must not discard an otherwise intact recording.
     try:
@@ -149,6 +156,62 @@ def restore_session(data):
         except (ValueError, TypeError):
             pass
     return state
+
+
+def export_context(state: SessionState, destination: Path) -> None:
+    """Export a complete point-in-time story, independently of local autosaving."""
+    temporary = None
+    try:
+        snapshot = snapshot_session(state)
+        raw = json.dumps(snapshot, ensure_ascii=False, allow_nan=False,
+                         separators=(",", ":")).encode("utf-8")
+        if len(raw) > MAX_SESSION_BYTES:
+            raise ValueError("The recorded session exceeds the supported export size")
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="wb", dir=destination.parent, prefix=".context-",
+                                         suffix=".tmp", delete=False) as target:
+            temporary = Path(target.name)
+            target.write(raw)
+            target.flush()
+            os.fsync(target.fileno())
+        for attempt in range(5):
+            try:
+                os.replace(temporary, destination)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(.02 * (attempt + 1))
+    except (OSError, ValueError, TypeError, RecursionError, MemoryError):
+        raise SessionStoreError("Context could not be exported. The previous file and current context "
+                                "were left unchanged.") from None
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def import_context(source: Path) -> SessionState:
+    """Read validated portable story data without changing or binding any session."""
+    try:
+        with Path(source).open("rb") as recording:
+            before = os.fstat(recording.fileno())
+            if before.st_size > MAX_SESSION_BYTES:
+                raise ValueError("Saved context exceeds the supported size")
+            raw = recording.read(before.st_size + 1)
+            after = os.fstat(recording.fileno())
+            if (len(raw) != before.st_size or recording.read(1)
+                    or before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns):
+                raise ValueError("Saved context changed while reading")
+        if len(raw) > MAX_SESSION_BYTES:
+            raise ValueError("Saved context exceeds the supported size")
+        return restore_session(json.loads(raw))
+    except (OSError, ValueError, TypeError, RecursionError, MemoryError):
+        raise SessionStoreError("Context could not be imported. Choose a valid context JSON file "
+                                "of up to 256 MiB. The current context and selected file were left unchanged.") from None
 
 
 class SessionStore:
