@@ -168,28 +168,39 @@ _TAG_PREFIXES = (
     "leonardoai",
 )
 
+_TAG_FIELDS = {"categories", "category", "keywords", "subject", "tags"}
+
 _ROW_FIELDS = {
     "ai_generated",
     "author",
     "categories",
     "category",
     "content",
+    "content_url",
     "creator",
     "description",
+    "file_url",
+    "foreign_landing_url",
+    "href",
     "image",
     "image_url",
     "is_ai_generated",
     "is_generated",
     "keywords",
+    "landing_url",
     "license",
+    "link",
     "media",
     "name",
+    "original",
     "prompt",
     "source",
     "source_url",
+    "src",
     "subject",
     "tags",
     "thumbnail",
+    "thumbnail_url",
     "title",
     "url",
 }
@@ -223,8 +234,14 @@ def _iter_row_metadata(value: object, depth: int = 0) -> Iterator[str]:
         for index, (key, item) in enumerate(value.items()):
             if index >= 80:
                 break
-            if str(key).casefold() in _ROW_FIELDS:
-                yield from _iter_row_metadata(item, depth + 1)
+            normalized_key = str(key).casefold()
+            if normalized_key not in _ROW_FIELDS:
+                continue
+            nested = list(_iter_row_metadata(item, depth + 1))
+            if normalized_key in _TAG_FIELDS:
+                yield from (f"tags: {text}" for text in nested)
+            else:
+                yield from nested
         return
     if isinstance(value, (list, tuple)):
         for item in value[:80]:
@@ -292,10 +309,10 @@ def is_generated_metadata(*values: object) -> bool:
         text = _normalize(value)
         if not text:
             continue
-        if _tagged_generation(text):
-            return True
         human_context = bool(_HUMAN_MADE_CONTEXT.search(text))
         discussion = bool(_DISCUSSION_CONTEXT.search(text))
+        if _tagged_generation(text) and not (human_context and discussion):
+            return True
         for match in _EXPLICIT_GENERATED.finditer(text):
             if _negated(text, match.start(), match.end()):
                 continue
@@ -336,9 +353,16 @@ def generated_status(row: dict, *values: Any) -> bool | None:
                 return True
             elif value is False:
                 known_negative = True
-    evidence = [*values]
-    evidence.extend(_iter_row_metadata(row))
-    if is_generated_metadata(*evidence):
+
+    evidence = [
+        value[:_MAX_TEXT]
+        for value in [*values, *_iter_row_metadata(row)]
+        if isinstance(value, str) and value
+    ]
+    if any(is_known_ai_source_url(value) for value in evidence):
+        return True
+    combined = " ".join(evidence)[:_MAX_TEXT]
+    if is_generated_metadata(combined):
         return True
     return False if known_negative else None
 
@@ -368,7 +392,6 @@ def _install_cache_namespace() -> None:
 
     original_get_query = Cache.get_query
     original_put_query = Cache.put_query
-    original_get_image = Cache.get_image
 
     def get_query(self, key: str):
         return original_get_query(self, _CACHE_NAMESPACE + key)
@@ -376,19 +399,8 @@ def _install_cache_namespace() -> None:
     def put_query(self, key: str, images):
         return original_put_query(self, _CACHE_NAMESPACE + key, images)
 
-    def get_image(self, url: str):
-        image = original_get_image(self, url)
-        if (
-            image is not None
-            and getattr(self.settings, "exclude_ai_generated", True)
-            and candidate_is_generated(image)
-        ):
-            return None
-        return image
-
     Cache.get_query = get_query
     Cache.put_query = put_query
-    Cache.get_image = get_image
     Cache._sis_ai_filter_namespace = _CACHE_NAMESPACE
 
 
