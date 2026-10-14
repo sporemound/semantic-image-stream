@@ -38,7 +38,7 @@ def main(argv=None):
             settings.audio_file = str(args.audio_file.resolve())
         if args.cpu:
             settings.whisper_device = "cpu"
-        from .desktop_ui import run
+        from .session_export_ui import run
         return run(settings, args.config)
     except (ValueError, OSError, ImportError, RuntimeError) as exc:
         print(f"Cannot launch Semantic Image Stream: {exc}", file=sys.stderr)
